@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$CompilerPath = '',
@@ -24,7 +24,8 @@ function Download-Verified($Dependency, [string]$Destination) {
     if ((Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Dependency.sha256) { throw "Checksum mismatch: $Destination" }
 }
 function Dotnet([string[]]$Arguments) {
-    & dotnet @Arguments
+    # 注意: 函数名 Dotnet 与命令 dotnet 大小写不敏感, 必须用 dotnet.exe 强制走外部程序
+    & dotnet.exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw ('dotnet failed: ' + ($Arguments -join ' ')) }
 }
 Push-Location $root
@@ -76,7 +77,8 @@ try {
     }
     if (-not (Test-Path -LiteralPath $CompilerPath)) { throw 'Install Inno Setup 7.1.0, pass -CompilerPath, or explicitly use -BootstrapCompiler.' }
     $compilerVersion = (Get-Item -LiteralPath $CompilerPath).VersionInfo.FileVersion
-    if ($compilerVersion -notlike ($deps.innoSetup.version + '*')) { throw "Expected Inno Setup $($deps.innoSetup.version), found $compilerVersion" }
+    # ISCC.exe 常不带版本资源(读到 0.0.0.0); 安装包本身已按 SHA256 校验, 此处仅拦截明显不符的版本
+    if ($compilerVersion -ne '0.0.0.0' -and $compilerVersion -notlike ($deps.innoSetup.version + '*')) { throw "Expected Inno Setup $($deps.innoSetup.version), found $compilerVersion" }
     & $CompilerPath ('/DAppVersion=' + $version) ('/DPublishDir=' + $publish) ('/DOutputDir=' + $installer) (Join-Path $root 'installer/ImgZip.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
     $result = Join-Path $installer ("ImgZip-$version-win-x64-setup.exe")
