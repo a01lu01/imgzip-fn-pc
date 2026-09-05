@@ -19,3 +19,12 @@ compare_compressed/
 .git/
 .DS_Store
 Thumbs.db
+
+# Native application build and local SDKs
+.tools/
+artifacts/
+**/obj/
+**/bin/
+*.user
+*.suo
+TestResults/

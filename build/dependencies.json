@@ -1,0 +1,22 @@
+{
+  "dotnetMac": {
+    "version": "10.0.400",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.400/dotnet-sdk-10.0.400-osx-arm64.tar.gz",
+    "sha512": "e440e9a58d4ff7741c8342ac3e086fa9ee2dadc25e01c0449a88317a74cfbd63625b8092c3b2a131ae14b16ab3401e9cc470e578e4c65a72a0b5786bd2308cde"
+  },
+  "powershellMac": {
+    "version": "7.6.5",
+    "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/powershell-7.6.5-osx-arm64.tar.gz",
+    "sha256": "8196d4b4e7c21b7f6df9d45687bb4e42dc8335f330b580d9eb15f3ef5042a8c3"
+  },
+  "innoSetup": {
+    "version": "7.1.0",
+    "url": "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe",
+    "sha256": "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
+  },
+  "caesiumWindows": {
+    "version": "1.4.0",
+    "url": "https://github.com/Lymphatus/caesium-clt/releases/download/v1.4.0/caesiumclt-v1.4.0-x86_64-pc-windows-msvc.zip",
+    "sha256": "a56454a83207fc25830f4d12679d7385c0906060f2ce5f54345ac5a4cf94b00f"
+  }
+}

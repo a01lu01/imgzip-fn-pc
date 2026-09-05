@@ -1,0 +1,20 @@
+<ContentDialog x:Class="ImgZip.App.SettingsDialog"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="设置" PrimaryButtonText="保存" CloseButtonText="取消" PrimaryButtonClick="Save_Click">
+  <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="460">
+    <StackPanel Spacing="12" MinWidth="380">
+      <TextBlock Text="NAS 连接" FontSize="15" FontWeight="SemiBold" />
+      <TextBox x:Name="ServerField" Header="服务器地址" PlaceholderText="192.168.1.10" />
+      <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /></Grid.ColumnDefinitions><TextBox x:Name="UserField" Header="SSH 用户" PlaceholderText="your_nas_user" /><NumberBox x:Name="PortField" Grid.Column="1" Header="SSH 端口" Minimum="1" Maximum="65535" Value="22" /></Grid>
+      <TextBox x:Name="KeyField" Header="私钥路径" PlaceholderText="C:\Users\you\.ssh\id_ed25519_nas" />
+      <TextBox x:Name="HostsField" Header="NAS 共享主机名（以逗号分隔）" />
+      <TextBox x:Name="IpField" Header="NAS IP（用于识别共享，可留空）" />
+      <StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="TestButton" Content="测试连接" Click="Test_Click" /><Button x:Name="ImportButton" Content="导入旧配置" Click="Import_Click" /></StackPanel>
+      <InfoBar x:Name="ConnectionInfo" IsOpen="False" IsClosable="False" />
+      <TextBlock Text="仅保存私钥路径，不复制密钥。连接测试使用当前输入，但不会保存。" Style="{StaticResource SecondaryText}" />
+      <TextBlock Text="引擎说明" FontSize="15" FontWeight="SemiBold" Margin="0,8,0,0" />
+      <TextBlock Text="本机引擎随安装包部署。NAS 需启用 SSH 公钥认证，并将 caesiumclt 安装到 ~/bin/caesiumclt；还需 Bash、GNU find/stat 和 setsid。可继续使用原项目的 imgzip-remote.ps1 -Setup 安装 NAS 引擎。" Style="{StaticResource SecondaryText}" />
+    </StackPanel>
+  </ScrollViewer>
+</ContentDialog>

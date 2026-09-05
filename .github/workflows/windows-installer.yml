@@ -1,0 +1,22 @@
+name: Build Windows installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build, test and package (no UI automation)
+        shell: pwsh
+        run: ./build/windows.ps1 -BootstrapCompiler
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ImgZip-windows-x64-installer
+          path: artifacts/installer/*
+          if-no-files-found: error

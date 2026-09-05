@@ -9,6 +9,18 @@
 
 底层压缩内核为 [caesium-clt](https://github.com/Lymphatus/caesium-clt)（libcaesium，支持 JPEG/PNG/WebP/GIF）。
 
+## A 版原生应用与安装包构建
+
+已选定 A「轻量工具窗」，新版源码位于 `src/ImgZip.App`（WinUI 3 + C#）与 `src/ImgZip.Core`（独立逻辑类库），无界面双引擎入口位于 `worker/`。使用 .NET 10、指定灰紫浅深主题、单任务实际进度与新输出目录保护。原有脚本入口保持可用。
+
+Windows 11 x64 构建：`pwsh -File build/windows.ps1 -BootstrapCompiler`。安装到当前用户目录，随包部署运行依赖和固定版本 caesium，支持可选右键菜单。完整环境、配置迁移、构建和使用步骤见 [Windows 说明](docs/WINDOWS.md)，实际验证范围见 [检查与验收](docs/VALIDATION.md)。**当前交付源码及可复现流程，尚未在 Windows 构建安装包或完成运行验证。**
+
+## Windows 11 界面设计演示
+
+新版界面的三个 HTML 方案位于 [`design-demo/`](design-demo/README.md)。用浏览器打开 [`design-demo/index.html`](design-demo/index.html) 即可比较轻量工具窗、Windows 设置风格和双栏工作台，支持指定的灰紫配色、明暗主题与模拟交互，无需安装依赖。
+
+这些演示仅保留作设计参考，压缩与 NAS 连接均为模拟；原生只实现已选定的 A 版。以下功能、目录结构和快速开始仍是原有 PowerShell 版本的使用说明，新版请阅读上方 Windows 说明。
+
 ## 功能
 
 - 批量/递归或“仅本文件夹”压缩，保留目录结构、EXIF、文件时间

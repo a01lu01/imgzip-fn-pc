@@ -1,0 +1,18 @@
+<Application x:Class="ImgZip.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ImgZip.App">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+        <ResourceDictionary Source="Themes/Colors.xaml" />
+      </ResourceDictionary.MergedDictionaries>
+      <local:BoolVisibilityConverter x:Key="BoolVisibility" />
+      <Style x:Key="SectionHeading" TargetType="TextBlock"><Setter Property="FontSize" Value="13" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+      <Style x:Key="SecondaryText" TargetType="TextBlock"><Setter Property="FontSize" Value="12" /><Setter Property="Foreground" Value="{ThemeResource SubtextBrush}" /><Setter Property="TextWrapping" Value="Wrap" /></Style>
+      <Style x:Key="Surface" TargetType="Border"><Setter Property="Background" Value="{ThemeResource CardBrush}" /><Setter Property="BorderBrush" Value="{ThemeResource BorderBrush}" /><Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="6" /></Style>
+      <Style x:Key="PresetButton" TargetType="ToggleButton"><Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Padding" Value="13,9" /><Setter Property="CornerRadius" Value="6" /></Style>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>
