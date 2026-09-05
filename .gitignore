@@ -1,0 +1,21 @@
+# ---- 本机配置与运行期文件(可能含 IP/账号等敏感信息)，一律不上传 ----
+local-config.json
+smb-map.json
+sendto-log.txt
+.sendto-path.txt
+
+# ---- 引擎二进制与下载包(请按需自行获取，不进仓库) ----
+bin/
+imgzip-launcher.exe
+*.zip
+*.tar.gz
+
+# ---- 测试图片与产物 ----
+*.png
+compare/
+compare_compressed/
+
+# ---- Git/系统 ----
+.git/
+.DS_Store
+Thumbs.db
