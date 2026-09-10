@@ -1,7 +1,0 @@
-{
-  "server": "192.168.1.10",
-  "user": "your_nas_ssh_user",
-  "nasHosts": ["YOUR_NAS_HOST", "your-nas-host"],
-  "nasIp": "192.168.1.10",
-  "keyPath": "C:\\Users\\you\\.ssh\\id_ed25519_nas"
-}

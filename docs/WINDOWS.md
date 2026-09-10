@@ -47,7 +47,7 @@ dotnet publish src/ImgZip.App/ImgZip.App.csproj -c Release --no-restore -o artif
 
 安装到 `%LOCALAPPDATA%\Programs\ImgZip`，使用 `PrivilegesRequired=lowest`，无需管理员权限；参见 [Inno Setup 权限说明](https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm)。安装创建当前用户的开始菜单入口与卸载入口，可选添加文件、文件夹及文件夹空白处的“使用 ImgZip 压缩图片”菜单，位于 Windows 11“显示更多选项”。
 
-新版菜单独立使用 `ImgZipWinUI` 注册表键，旧版 `ImgZipCompress` 不受影响。升级前请先结束任务并关闭应用，再运行新版安装程序。升级与卸载均保留 `%LOCALAPPDATA%\ImgZip`；卸载不删除旧项目、私钥或压缩结果。安装包默认不签名，正式分发如需代码签名，应由发布者在自己的 Windows 构建环境配置证书。
+新版菜单独立使用 `ImgZipWinUI` 注册表键；早期版本的 `ImgZipCompress` 键如仍存在，需由用户自行清理。升级前请先结束任务并关闭应用，再运行新版安装程序。升级与卸载均保留 `%LOCALAPPDATA%\ImgZip`；卸载不删除私钥或压缩结果。安装包默认不签名，正式分发如需代码签名，应由发布者在自己的 Windows 构建环境配置证书。
 
 ## 使用
 
@@ -74,13 +74,7 @@ dotnet publish src/ImgZip.App/ImgZip.App.csproj -c Release --no-restore -o artif
 
 PC 引擎随安装包部署。NAS 使用 Windows OpenSSH 客户端及公钥认证；服务器需安装 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk，并允许读取 Samba 共享配置。引擎位置为 `~/bin/caesiumclt`。首次连接使用 OpenSSH `accept-new` 保存主机密钥，已有主机密钥改变时拒绝连接。带口令的私钥需通过用户的 SSH agent 解锁；应用不收集口令。
 
-保留旧项目的安装方式（在旧配置所在项目目录运行）：
-
-```powershell
-.\imgzip-remote.ps1 -Setup
-```
-
-也可按 [caesium-clt 1.4.0 官方发布](https://github.com/Lymphatus/caesium-clt/releases/tag/v1.4.0) 选择适合 NAS 架构的 Linux 引擎，自行部署至上述路径。NAS 安装不会由新版应用自动执行。
+NAS 侧引擎需自行部署：按 [caesium-clt 1.4.0 官方发布](https://github.com/Lymphatus/caesium-clt/releases/tag/v1.4.0) 选择适合 NAS 架构的 Linux 版本，放入 `~/bin/caesiumclt` 并赋予执行权限。新版应用不会自动安装或升级 NAS 侧引擎。
 
 映射盘通过 Windows CIM 转成 UNC，验证共享主机归属后重新读取 Samba 共享到真实目录的映射；不盲信缓存。解析或 SSH 失败会显示原因。Windows 可以访问来源且 PC 引擎可用时，可以手动切换本机处理。
 
