@@ -22,4 +22,17 @@
     <ProjectReference Include="../ImgZip.Core/ImgZip.Core.csproj" />
     <Content Include="../../worker/*" Link="worker/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!--
+    WinUI 的 PRI/XBF 资源由 build 输出生成，但默认不会随 dotnet publish 复制；
+    缺少它们时应用启动即抛 XamlParseException(Cannot locate resource from 'ms-appx:///MainWindow.xaml')。
+  -->
+  <Target Name="CopyWinUIResourcesToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_WinUIXbf Include="$(TargetDir)**\*.xbf" />
+      <_WinUIPri Include="$(TargetDir)*.pri" Exclude="$(TargetDir)Microsoft.*.pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_WinUIXbf)" DestinationFiles="@(_WinUIXbf->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_WinUIPri)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

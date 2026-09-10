@@ -15,7 +15,18 @@ public partial class App : Application
             {
                 var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImgZip", "logs");
                 Directory.CreateDirectory(directory);
-                File.AppendAllText(Path.Combine(directory, "application.log"), $"{DateTimeOffset.Now:O} {e.Exception}\n");
+                var details = new System.Text.StringBuilder();
+                details.AppendLine($"{DateTimeOffset.Now:O} {e.Exception}");
+                for (var inner = e.Exception.InnerException; inner is not null; inner = inner.InnerException)
+                    details.AppendLine($"[INNER] {inner.GetType().FullName} HR=0x{inner.HResult:X8}: {inner.Message}");
+                foreach (var property in e.Exception.GetType().GetProperties())
+                {
+                    try { details.AppendLine($"[PROP] {property.Name} = {property.GetValue(e.Exception)}"); }
+                    catch { }
+                }
+                foreach (System.Collections.DictionaryEntry entry in e.Exception.Data)
+                    details.AppendLine($"[DATA] {entry.Key} = {entry.Value}");
+                File.AppendAllText(Path.Combine(directory, "application.log"), details.ToString());
             }
             catch { }
         };
