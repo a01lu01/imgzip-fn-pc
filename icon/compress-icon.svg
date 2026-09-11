@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Image-compress app icon. Flat vector: solid fills only — no gradient,
+       no shadow, no reflection, no texture, no text, transparent background. -->
+  <!-- Badge : 880px rounded square at (72,72); corner radius 194 = 22% of 880;
+               margin 72px = 7.03% of the canvas on all four sides. -->
+  <!-- Arrows: mirrored about x=512; shaft 88 thick (~8.6% of the canvas);
+               head 264 wide x 152 long; tip gap 96 so they never overlap. -->
+  <rect x="72" y="72" width="880" height="880" rx="194" ry="194" fill="#6C357C"/>
+  <path fill="#FFFFFF" d="M136 468 H312 V380 L464 512 L312 644 V556 H136 Z"/>
+  <path fill="#FFFFFF" d="M888 468 H712 V380 L560 512 L712 644 V556 H888 Z"/>
+</svg>

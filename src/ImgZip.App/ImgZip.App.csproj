@@ -16,11 +16,15 @@
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>ImgZip</AssemblyName>
+    <!-- 应用图标：exe 内嵌图标（资源管理器/任务栏/开始菜单都取它） -->
+    <ApplicationIcon>..\..\icon\compress-icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
     <ProjectReference Include="../ImgZip.Core/ImgZip.Core.csproj" />
     <Content Include="../../worker/*" Link="worker/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 自绘标题栏左侧的小图标 -->
+    <Content Include="../../icon/compress-icon-1024.png" Link="Assets/app-icon.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--

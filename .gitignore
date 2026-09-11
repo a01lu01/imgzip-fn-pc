@@ -10,8 +10,9 @@ imgzip-launcher.exe
 *.zip
 *.tar.gz
 
-# ---- 测试图片与产物 ----
-*.png
+# ---- 测试图片与产物（仅限仓库根目录的临时样张，图标资源需入库）----
+/*.png
+!icon/*.png
 compare/
 compare_compressed/
 

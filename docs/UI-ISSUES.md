@@ -89,6 +89,18 @@
 
 **已实现（0.3.1）**：新增幂等的 `FinalizeTaskAsync(task)`（`Finalized` 标志防重复），并在 `task.Apply(e)` 之后、终态确认时立即执行收尾——删除 `tasks/<id>.json`；`succeeded / dryRun / emptyResult` 从任务列表移除，`failed / partial / cancelled / unknown` 保留；`RunTaskAsync / CancelTaskAsync / InspectTaskAsync` 尾部保留幂等兜底调用。新增回归用例“成功任务收尾后列表为空且任务记录被删除”，测试总数 15 项全部通过；用户机器上那条残留记录已清除。
 
+## 10. 应用图标缺失（显示为 WinUI 默认占位图）
+
+**状态**：已完成（0.3.3）
+
+**现象**：资源管理器/任务栏显示的是 WinUI 默认占位图标（蓝色方块窗口），不是产品图标。
+
+**已实现**：图标资源放在 `icon/`——`compress-icon.svg`（矢量源）、`compress-icon-1024.png`、`compress-icon.ico`（7 帧：16/24/32/48/64/128/256）、`compress-icon-preview.png` 与生成脚本 `build_icon.py`。接入三处：`ImgZip.App.csproj` 用 `<ApplicationIcon>..\..\icon\compress-icon.ico</ApplicationIcon>` 把图标内嵌进 exe（资源管理器、任务栏、开始菜单都取它）；自绘标题栏左侧由字体图标改为 `<Image Source="Assets/app-icon.png">`，PNG 以 `Content` 形式随发布复制；`installer/ImgZip.iss` 增加 `SetupIconFile=..\icon\compress-icon.ico`。
+
+**验证结果**：安装 0.3.3 后，exe 图标中心像素为 R=105 G=49 B=121（设计色 `#6C357C` = 108,53,124，差异来自 32px 缩放的抗锯齿），安装包图标同样生效；`Assets/app-icon.png` 已随发布复制；应用启动正常。
+
+**附带修正**：`.gitignore` 原本的 `*.png` 会连图标一起忽略，现改为仅忽略仓库根目录样张并显式放行 `icon/*.png`。
+
 # 后续版本
 
 ## 4. 本机 PC 支持多任务并行，NAS 维持单任务

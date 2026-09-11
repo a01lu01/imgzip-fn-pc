@@ -22,6 +22,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.22000
 OutputDir={#OutputDir}
 OutputBaseFilename=ImgZip-{#AppVersion}-win-x64-setup
+#ifexist "..\icon\compress-icon.ico"
+SetupIconFile=..\icon\compress-icon.ico
+#endif
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
