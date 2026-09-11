@@ -35,7 +35,10 @@
             <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="22" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
               <FontIcon Glyph="&#xE7F4;" FontSize="19" Foreground="{ThemeResource SubtextBrush}" />
               <StackPanel Grid.Column="1" Spacing="3"><TextBlock Text="执行位置" FontSize="13" /><TextBlock Text="{Binding EngineStatus}" Style="{StaticResource SecondaryText}" /></StackPanel>
-              <ComboBox Grid.Column="2" IsEnabled="{Binding CanEdit}" SelectedIndex="{Binding EngineIndex, Mode=TwoWay}" SelectionChanged="Engine_Changed" MinWidth="118" VerticalAlignment="Center" AutomationProperties.Name="压缩引擎"><ComboBoxItem Content="本机 PC" /><ComboBoxItem Content="NAS" IsEnabled="{Binding NasEligible}" /></ComboBox>
+              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" AutomationProperties.Name="压缩引擎">
+                <ToggleButton x:Name="EnginePcButton" Content="本机 PC" Tag="pc" Style="{StaticResource SegmentLeftButton}" Click="EngineButton_Click" />
+                <ToggleButton x:Name="EngineNasButton" Content="NAS" Tag="nas" Style="{StaticResource SegmentRightButton}" Click="EngineButton_Click" />
+              </StackPanel>
             </Grid>
           </Border>
           <Expander HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" IsEnabled="{Binding CanEdit}" IsExpanded="{Binding AdvancedExpanded, Mode=TwoWay}">

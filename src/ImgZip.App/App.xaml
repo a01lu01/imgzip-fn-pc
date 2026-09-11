@@ -13,6 +13,9 @@
       <Style x:Key="SecondaryText" TargetType="TextBlock"><Setter Property="FontSize" Value="12" /><Setter Property="Foreground" Value="{ThemeResource SubtextBrush}" /><Setter Property="TextWrapping" Value="Wrap" /></Style>
       <Style x:Key="Surface" TargetType="Border"><Setter Property="Background" Value="{ThemeResource CardBrush}" /><Setter Property="BorderBrush" Value="{ThemeResource BorderBrush}" /><Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="6" /></Style>
       <Style x:Key="PresetButton" TargetType="ToggleButton"><Setter Property="HorizontalAlignment" Value="Stretch" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Padding" Value="13,9" /><Setter Property="CornerRadius" Value="6" /></Style>
+      <Style x:Key="SegmentButton" TargetType="ToggleButton"><Setter Property="Padding" Value="14,6" /><Setter Property="MinWidth" Value="84" /><Setter Property="HorizontalContentAlignment" Value="Center" /><Setter Property="VerticalAlignment" Value="Center" /></Style>
+      <Style x:Key="SegmentLeftButton" TargetType="ToggleButton" BasedOn="{StaticResource SegmentButton}"><Setter Property="CornerRadius" Value="6,0,0,6" /></Style>
+      <Style x:Key="SegmentRightButton" TargetType="ToggleButton" BasedOn="{StaticResource SegmentButton}"><Setter Property="CornerRadius" Value="0,6,6,0" /></Style>
     </ResourceDictionary>
   </Application.Resources>
 </Application>

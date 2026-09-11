@@ -17,6 +17,7 @@ public sealed partial class MainWindow : Window
     private bool allowClose;
     private bool showingClose;
     private bool synchronizingTheme;
+    private bool synchronizingEngine;
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
     public MainWindow(IWorkerClient worker, ConfigStore store, string[] initialPaths)
@@ -33,7 +34,11 @@ public sealed partial class MainWindow : Window
         var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
         AppWindow.Move(new PointInt32(area.X + Math.Max(0, (area.Width - AppWindow.Size.Width) / 2), area.Y + Math.Max(0, (area.Height - AppWindow.Size.Height) / 2)));
         AppWindow.Closing += Window_Closing;
-        ViewModel.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ViewModel.Config)) ApplyTheme(); };
+        ViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ViewModel.Config)) ApplyTheme();
+            else if (e.PropertyName is nameof(ViewModel.EngineIndex) or nameof(ViewModel.NasEligible) or nameof(ViewModel.CanEdit)) SyncEngineButtons();
+        };
         Root.ActualThemeChanged += (_, _) => ApplyCaptionTheme();
     }
     private async void Root_Loaded(object sender, RoutedEventArgs e)
@@ -43,6 +48,7 @@ public sealed partial class MainWindow : Window
         await Safe(async () =>
         {
             await ViewModel.InitializeAsync(); ApplyTheme();
+            SyncEngineButtons();
             if (initialPaths.Length > 0) await ViewModel.SetSourcesAsync(initialPaths);
         });
     }
@@ -57,10 +63,19 @@ public sealed partial class MainWindow : Window
     private void ApplyCaptionTheme()
     {
         var dark = Root.ActualTheme == ElementTheme.Dark;
+        var foreground = dark ? Microsoft.UI.Colors.White : Windows.UI.Color.FromArgb(255, 31, 31, 31);
+        var inactiveForeground = dark ? Windows.UI.Color.FromArgb(255, 148, 148, 148) : Windows.UI.Color.FromArgb(255, 120, 120, 120);
+        var hoverBackground = dark ? Windows.UI.Color.FromArgb(255, 51, 51, 51) : Windows.UI.Color.FromArgb(255, 233, 233, 233);
+        var pressedBackground = dark ? Windows.UI.Color.FromArgb(255, 68, 68, 68) : Windows.UI.Color.FromArgb(255, 214, 214, 214);
         AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
-        AppWindow.TitleBar.ButtonForegroundColor = dark ? Microsoft.UI.Colors.White : Windows.UI.Color.FromArgb(255, 31, 31, 31);
-        AppWindow.TitleBar.ButtonHoverBackgroundColor = dark ? Windows.UI.Color.FromArgb(255, 51, 51, 51) : Windows.UI.Color.FromArgb(255, 233, 233, 233);
+        AppWindow.TitleBar.ButtonForegroundColor = foreground;
+        AppWindow.TitleBar.ButtonInactiveForegroundColor = inactiveForeground;
+        AppWindow.TitleBar.ButtonHoverBackgroundColor = hoverBackground;
+        // 悬停/按下时系统默认前景色会与自定义底色冲突，必须显式给出对比色。
+        AppWindow.TitleBar.ButtonHoverForegroundColor = foreground;
+        AppWindow.TitleBar.ButtonPressedBackgroundColor = pressedBackground;
+        AppWindow.TitleBar.ButtonPressedForegroundColor = foreground;
     }
     private async Task Safe(Func<Task> action)
     {
@@ -95,7 +110,30 @@ public sealed partial class MainWindow : Window
     private async void Start_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.StartAsync);
     private async void Cancel_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.CancelAsync);
     private async void Inspect_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.InspectAsync);
-    private async void Engine_Changed(object sender, SelectionChangedEventArgs e) { if (loaded) await Safe(ViewModel.ProbeSelectedAsync); }
+    private void SyncEngineButtons()
+    {
+        synchronizingEngine = true;
+        try
+        {
+            EnginePcButton.IsChecked = ViewModel.EngineIndex == 0;
+            EngineNasButton.IsChecked = ViewModel.EngineIndex == 1;
+            EnginePcButton.IsEnabled = ViewModel.CanEdit;
+            EngineNasButton.IsEnabled = ViewModel.CanEdit && ViewModel.NasEligible;
+        }
+        finally { synchronizingEngine = false; }
+    }
+    private async void EngineButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (synchronizingEngine) return;
+        var index = (sender as FrameworkElement)?.Tag as string == "nas" ? 1 : 0;
+        if (index == 1 && !ViewModel.NasEligible) { SyncEngineButtons(); return; }
+        if (ViewModel.EngineIndex != index)
+        {
+            ViewModel.EngineIndex = index;
+            if (loaded) await Safe(ViewModel.ProbeSelectedAsync);
+        }
+        SyncEngineButtons();
+    }
     private async void Theme_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (!loaded || synchronizingTheme) return;

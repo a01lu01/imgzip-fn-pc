@@ -239,6 +239,40 @@ function Stop-Engine($Process) {
     if (-not $Process.WaitForExit(10000)) { throw 'Engine termination could not be confirmed.' }
     $script:terminationUnconfirmed = $false
 }
+function Move-BatchOutputs {
+    # 组批运行时把 stage 中已写完的产物搬到最终位置并逐张上报；文件被独占打开说明仍在写入，跳过本轮。
+    param($Stage, $BatchIndexes, $Files, $Output, $Emitted, $Counts)
+    foreach ($item in @(Get-ChildItem -LiteralPath $Stage -File -Recurse -ErrorAction SilentlyContinue)) {
+        $stream = $null
+        try { $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None) }
+        catch { continue }
+        finally { if ($stream) { $stream.Dispose() } }
+        $stem = [IO.Path]::GetFileNameWithoutExtension($item.Name)
+        foreach ($bi in $BatchIndexes) {
+            if ($Emitted.Contains([int]$bi)) { continue }
+            # 引擎按源文件名产出产物, 因此用源 stem 匹配(计划名可能因大小写去重而带 _2 后缀)
+            $sourceStem = [IO.Path]::GetFileNameWithoutExtension([string]$Files[$bi].path)
+            if (-not [string]::Equals($stem, $sourceStem, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $relative = [string]$Files[$bi].relativeOutput
+            $relativeDirectory = [IO.Path]::GetDirectoryName($relative)
+            $destination = if ($relativeDirectory) { Join-Path $Output $relativeDirectory } else { $Output }
+            $null = [IO.Directory]::CreateDirectory($destination)
+            $leaf = [IO.Path]::GetFileName($relative); $target = Join-Path $destination $leaf; $serial = 2
+            while (Test-Path -LiteralPath $target) {
+                $target = Join-Path $destination ([IO.Path]::GetFileNameWithoutExtension($leaf) + "_$serial" + [IO.Path]::GetExtension($leaf)); $serial++
+            }
+            # File.Move without overwrite is the final race-safe check.
+            [IO.File]::Move($item.FullName, $target)
+            $null = $Emitted.Add([int]$bi)
+            $length = (Get-Item -LiteralPath $target).Length
+            $Counts.succeeded++; $Counts.beforeBytes += [long]$Files[$bi].size; $Counts.afterBytes += $length; $Counts.completed++
+            $event = $Counts.Clone(); $event.type = 'file'; $event.state = 'succeeded'; $event.index = [int]$bi
+            $event.path = [string]$Files[$bi].path; $event.beforeBytes = [long]$Files[$bi].size; $event.afterBytes = $length
+            Emit $event
+            break
+        }
+    }
+}
 function Run-Local {
     $sources = Select-LocalSources
     $sourceRoot = if (Test-Path -LiteralPath $sources[0] -PathType Container) { $sources[0].TrimEnd([IO.Path]::DirectorySeparatorChar) } else { [IO.Path]::GetDirectoryName($sources[0]) }
@@ -272,44 +306,80 @@ function Run-Local {
     $output = Unique-Output ($sourceRoot + '_compressed') -Create
     $counts.output = $output
     $manifest = $counts.Clone();$manifest.type='manifest';$manifest.state='ready';Emit $manifest
-    for ($index=0; $index -lt $total; $index++) {
+    # 组批：同批共享参数；按“是否需要 --format 转换”分组，避免引擎拒绝同格式转换。
+    $cores = [Math]::Max(1, [Environment]::ProcessorCount)
+    $batchLimit = [Math]::Min(16, [Math]::Max(4, 2 * $cores))
+    $plain = New-Object 'System.Collections.Generic.List[int]'
+    $convert = New-Object 'System.Collections.Generic.List[int]'
+    for ($i = 0; $i -lt $total; $i++) {
+        $ext = [IO.Path]::GetExtension([string]$files[$i].path).TrimStart('.').ToLowerInvariant()
+        if ($ext -eq 'jpg') { $ext = 'jpeg' }
+        if ($request.options.format -ne 'keep' -and $request.options.format -ne $ext) { $convert.Add($i) } else { $plain.Add($i) }
+    }
+    $batches = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($group in @($plain, $convert)) {
+        $current = New-Object 'System.Collections.Generic.List[int]'
+        $stems = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($idx in $group) {
+            # 用源 stem 判重: 同一批内引擎会按源文件名写出产物, 重复会互相覆盖
+            $stem = [IO.Path]::GetFileNameWithoutExtension([string]$files[$idx].path)
+            if ($current.Count -ge $batchLimit -or -not $stems.Add($stem)) {
+                if ($current.Count -gt 0) { $batches.Add($current) }
+                $current = New-Object 'System.Collections.Generic.List[int]'
+                $stems = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                $null = $stems.Add($stem)
+            }
+            $current.Add($idx)
+        }
+        if ($current.Count -gt 0) { $batches.Add($current) }
+    }
+    $batchNumber = 0
+    foreach ($batchIndexes in $batches) {
         if (Test-Path -LiteralPath $cancelFile) { break }
-        $file = $files[$index]
-        $stage = Join-Path $output ('.imgzip-' + $request.jobId + '-' + $index)
+        $batchNumber++
+        $stage = Join-Path $output ('.imgzip-' + $request.jobId + '-b' + $batchNumber)
         $null = New-Item -ItemType Directory -Path $stage
-        $process = $null; $failure = ''; $wasCancelled = $false
+        $process = $null; $text = ''; $wasCancelled = $false
+        $emitted = New-Object 'System.Collections.Generic.HashSet[int]'
         try {
-            $a = (Get-NativeArgs $file.path) + @('-o',$stage,[string]$file.path)
+            $a = @()
+            $a += Get-NativeArgs ([string]$files[$batchIndexes[0]].path)
+            $ti = [Array]::IndexOf($a, '--threads')
+            $batchThreads = [Math]::Min([Math]::Max(1, [int]$request.options.threads), $batchIndexes.Count)
+            if ($ti -ge 0) { $a[$ti + 1] = "$batchThreads" }
+            $a += @('--verbose', '3', '-o', $stage)
+            foreach ($bi in $batchIndexes) { $a += [string]$files[$bi].path }
             $process = Start-Child $request.enginePath $a
             $outTask = $process.StandardOutput.ReadToEndAsync(); $errTask = $process.StandardError.ReadToEndAsync()
-            while (-not $process.WaitForExit(100)) {
-                if (Test-Path -LiteralPath $cancelFile) { Stop-Engine $process; $wasCancelled=$true; break }
+            while (-not $process.WaitForExit(150)) {
+                if (Test-Path -LiteralPath $cancelFile) { Stop-Engine $process; $wasCancelled = $true; break }
+                # 引擎每写完一张就上报一次，保持逐张进度
+                Move-BatchOutputs $stage $batchIndexes $files $output $emitted $counts
             }
-            $text = $outTask.GetAwaiter().GetResult() + $errTask.GetAwaiter().GetResult()
-            if ($wasCancelled -or (Test-Path -LiteralPath $cancelFile)) { $wasCancelled=$true }
-            elseif ($process.ExitCode -ne 0) { $failure = "caesium exit=$($process.ExitCode): $text" }
+            if ($wasCancelled -or (Test-Path -LiteralPath $cancelFile)) { $wasCancelled = $true }
             else {
-                $generated = @(Get-ChildItem -LiteralPath $stage -File -Recurse)
-                if ($generated.Count -ne 1) { $failure = "引擎未生成唯一输出：$text" }
-                else {
-                    $relative = $file.relativeOutput
-                    $relativeDirectory = [IO.Path]::GetDirectoryName($relative)
-                    $destination = if ($relativeDirectory) { Join-Path $output $relativeDirectory } else { $output }
-                    $null = [IO.Directory]::CreateDirectory($destination)
-                    $leaf = [IO.Path]::GetFileName($relative); $target = Join-Path $destination $leaf; $serial=2
-                    while (Test-Path -LiteralPath $target) {
-                        $target = Join-Path $destination ([IO.Path]::GetFileNameWithoutExtension($leaf) + "_$serial" + [IO.Path]::GetExtension($leaf));$serial++
-                    }
-                    # File.Move without overwrite is the final race-safe check.
-                    [IO.File]::Move($generated[0].FullName,$target)
-                    $counts.succeeded++;$counts.beforeBytes += $file.size;$counts.afterBytes += $generated[0].Length
-                    $counts.completed++
-                    $event = $counts.Clone();$event.type='file';$event.state='succeeded';$event.index=$index;$event.path=$file.path
-                    $event.beforeBytes=$file.size;$event.afterBytes=$generated[0].Length;Emit $event
+                $text = $outTask.GetAwaiter().GetResult() + $errTask.GetAwaiter().GetResult()
+                Move-BatchOutputs $stage $batchIndexes $files $output $emitted $counts
+                foreach ($bi in $batchIndexes) {
+                    if ($emitted.Contains([int]$bi)) { continue }
+                    $src = [string]$files[$bi].path
+                    $failure = '引擎未生成输出'
+                    if ($text -match ('(?m)^\[(?:Error|Skipped)\]\s+' + [regex]::Escape($src) + '\s+->')) { $failure = $Matches[0].Trim() }
+                    elseif ($process.ExitCode -ne 0) { $failure = "caesium exit=$($process.ExitCode): $text" }
+                    if ($failure.Length -gt 2000) { $failure = $failure.Substring(0, 2000) }
+                    $counts.failed++; $counts.completed++
+                    $event = $counts.Clone(); $event.type = 'file'; $event.state = 'failed'; $event.path = $src; $event.index = [int]$bi
+                    $event.message = $failure; $event.beforeBytes = 0; $event.afterBytes = 0; Emit $event
                 }
             }
-        } catch { $failure = $_.Exception.Message }
-        finally {
+        } catch {
+            foreach ($bi in $batchIndexes) {
+                if ($emitted.Contains([int]$bi)) { continue }
+                $counts.failed++; $counts.completed++
+                $event = $counts.Clone(); $event.type = 'file'; $event.state = 'failed'; $event.path = [string]$files[$bi].path; $event.index = [int]$bi
+                $event.message = $_.Exception.Message; $event.beforeBytes = 0; $event.afterBytes = 0; Emit $event
+            }
+        } finally {
             if ($process) {
                 if (-not $process.HasExited) { Stop-Engine $process }
                 $process.Dispose()
@@ -317,12 +387,6 @@ function Run-Local {
             if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
         }
         if ($wasCancelled) { break }
-        if ($failure) {
-            $counts.failed++;$counts.completed++
-            if ($failure.Length -gt 2000) { $failure=$failure.Substring(0,2000) }
-            $event=$counts.Clone();$event.type='file';$event.state='failed';$event.path=$file.path;$event.index=$index;$event.message=$failure
-            $event.beforeBytes=0;$event.afterBytes=0;Emit $event
-        }
     }
     $counts.type='finished'
     $counts.state = if (Test-Path -LiteralPath $cancelFile) { 'cancelled' } elseif ($counts.failed -eq 0) { 'succeeded' } elseif ($counts.succeeded -gt 0) { 'partial' } else { 'failed' }

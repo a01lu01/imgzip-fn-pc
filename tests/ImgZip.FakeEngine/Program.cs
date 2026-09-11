@@ -33,24 +33,54 @@ if (args.Length < 3) return 10;
 var outputIndex = Array.IndexOf(args, "-o");
 if (outputIndex < 0) return 11;
 var output = args[outputIndex + 1];
-var source = args[^1];
-var name = Path.GetFileName(source);
-if (!File.Exists(source)) { Console.Error.WriteLine("Source argument was corrupted."); return 12; }
 if (!args.Contains("-e") || !args.Contains("--keep-dates") || !args.Contains("--threads")) return 13;
 if (args.Contains("--lossless") && (args.Contains("-q") || args.Contains("--max-size"))) return 14;
-if (name.StartsWith("slow", StringComparison.Ordinal)) await Task.Delay(TimeSpan.FromSeconds(20));
-if (name.StartsWith("fail", StringComparison.Ordinal)) { Console.Error.WriteLine("Decoder failure fixture"); return 7; }
-if (name.StartsWith("empty", StringComparison.Ordinal)) return 0;
-var extension = Path.GetExtension(source).TrimStart('.').ToLowerInvariant();
 var formatIndex = Array.IndexOf(args, "--format");
-if (formatIndex >= 0)
+var format = formatIndex >= 0 ? args[formatIndex + 1] : null;
+var verboseIndex = Array.IndexOf(args, "--verbose");
+var verbose = verboseIndex >= 0 && verboseIndex + 1 < args.Length && int.TryParse(args[verboseIndex + 1], out var parsedVerbose) ? parsedVerbose : 1;
+
+// 组批调用：收集全部输入文件（跳过选项及其参数），逐个产出与真实引擎一致的输出。
+var valueOptions = new HashSet<string>(StringComparer.Ordinal)
 {
-    var format = args[formatIndex + 1];
-    if ((extension == "jpg" ? "jpeg" : extension) == format) { Console.Error.WriteLine("Same-format conversion is invalid"); return 15; }
-    extension = format == "jpeg" ? "jpg" : format;
+    "-o", "--threads", "-q", "--format", "--max-size", "--long-edge", "--short-edge", "--width", "--height", "--verbose",
+    "--jpeg-chroma-subsampling", "--png-opt-level"
+};
+var inputs = new List<string>();
+for (var i = 0; i < args.Length; i++)
+{
+    var argument = args[i];
+    if (valueOptions.Contains(argument)) { i++; continue; }
+    if (argument.StartsWith('-')) continue;
+    inputs.Add(argument);
 }
+if (inputs.Count == 0) { Console.Error.WriteLine("Source argument was corrupted."); return 12; }
+
 Directory.CreateDirectory(output);
-var bytes = await File.ReadAllBytesAsync(source);
-await File.WriteAllBytesAsync(Path.Combine(output, Path.GetFileNameWithoutExtension(source) + "." + extension), bytes[..Math.Max(1, bytes.Length / 2)]);
-Console.WriteLine("1 success");
+var success = 0; var errors = 0;
+foreach (var source in inputs)
+{
+    var name = Path.GetFileName(source);
+    if (!File.Exists(source)) { Console.Error.WriteLine($"Missing source: {source}"); errors++; continue; }
+    if (name.StartsWith("slow", StringComparison.Ordinal)) await Task.Delay(TimeSpan.FromSeconds(20));
+    if (name.StartsWith("fail", StringComparison.Ordinal)) { Console.Error.WriteLine($"Decoder failure fixture: {source}"); errors++; continue; }
+    if (name.StartsWith("empty", StringComparison.Ordinal)) { Console.Error.WriteLine($"Empty output fixture: {source}"); errors++; continue; }
+    var extension = Path.GetExtension(source).TrimStart('.').ToLowerInvariant();
+    if (format is not null)
+    {
+        if ((extension == "jpg" ? "jpeg" : extension) == format)
+        {
+            Console.Error.WriteLine($"Same-format conversion is invalid: {source}");
+            if (verbose >= 3) Console.WriteLine($"[Error] {source} -> {Path.Combine(output, name)}");
+            errors++; continue;
+        }
+        extension = format == "jpeg" ? "jpg" : format;
+    }
+    var target = Path.Combine(output, Path.GetFileNameWithoutExtension(source) + "." + extension);
+    var bytes = await File.ReadAllBytesAsync(source);
+    await File.WriteAllBytesAsync(target, bytes[..Math.Max(1, bytes.Length / 2)]);
+    success++;
+    if (verbose >= 3) Console.WriteLine($"[Success] {source} -> {target}");
+}
+Console.WriteLine($"Compressed {inputs.Count} files ({success} success, 0 skipped, {errors} errors)");
 return 0;
