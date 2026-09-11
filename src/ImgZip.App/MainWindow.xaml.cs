@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using ImgZip.Core;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -12,6 +13,7 @@ namespace ImgZip.App;
 public sealed partial class MainWindow : Window
 {
     public MainViewModel ViewModel { get; }
+    private readonly ConfigStore store;
     private readonly string[] initialPaths;
     private bool loaded;
     private bool allowClose;
@@ -22,17 +24,13 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
     public MainWindow(IWorkerClient worker, ConfigStore store, string[] initialPaths)
     {
+        this.store = store;
         this.initialPaths = initialPaths;
         ViewModel = new MainViewModel(worker, store, Path.Combine(AppContext.BaseDirectory, "bin", "caesiumclt.exe"), action => DispatcherQueue.TryEnqueue(() => action()));
         InitializeComponent();
         Root.DataContext = ViewModel;
         Title = "ImgZip · 图片压缩";
         ExtendsContentIntoTitleBar = false;
-        var dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
-        var scale = (dpi == 0 ? 96 : dpi) / 96d;
-        AppWindow.Resize(new SizeInt32((int)(760 * scale), (int)(640 * scale)));
-        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
-        AppWindow.Move(new PointInt32(area.X + Math.Max(0, (area.Width - AppWindow.Size.Width) / 2), area.Y + Math.Max(0, (area.Height - AppWindow.Size.Height) / 2)));
         AppWindow.Closing += Window_Closing;
         ViewModel.PropertyChanged += (_, e) =>
         {
@@ -45,6 +43,7 @@ public sealed partial class MainWindow : Window
     {
         if (loaded) return;
         loaded = true;
+        ApplyWindowPlacement();
         await Safe(async () =>
         {
             await ViewModel.InitializeAsync(); ApplyTheme();
@@ -67,6 +66,12 @@ public sealed partial class MainWindow : Window
         var inactiveForeground = dark ? Windows.UI.Color.FromArgb(255, 148, 148, 148) : Windows.UI.Color.FromArgb(255, 120, 120, 120);
         var hoverBackground = dark ? Windows.UI.Color.FromArgb(255, 51, 51, 51) : Windows.UI.Color.FromArgb(255, 233, 233, 233);
         var pressedBackground = dark ? Windows.UI.Color.FromArgb(255, 68, 68, 68) : Windows.UI.Color.FromArgb(255, 214, 214, 214);
+        // 标题栏本身由系统绘制：必须显式给背景/前景，否则系统主题与应用主题相反时会出现白底白图标。
+        var barBackground = dark ? Windows.UI.Color.FromArgb(255, 31, 31, 31) : Windows.UI.Color.FromArgb(255, 243, 243, 243);
+        AppWindow.TitleBar.BackgroundColor = barBackground;
+        AppWindow.TitleBar.InactiveBackgroundColor = barBackground;
+        AppWindow.TitleBar.ForegroundColor = foreground;
+        AppWindow.TitleBar.InactiveForegroundColor = inactiveForeground;
         AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor = foreground;
@@ -76,6 +81,57 @@ public sealed partial class MainWindow : Window
         AppWindow.TitleBar.ButtonHoverForegroundColor = foreground;
         AppWindow.TitleBar.ButtonPressedBackgroundColor = pressedBackground;
         AppWindow.TitleBar.ButtonPressedForegroundColor = foreground;
+    }
+    private sealed record WindowState(int X, int Y, int W, int H);
+    private string WindowStatePath => Path.Combine(store.DirectoryPath, "window-state.json");
+    private WindowState? LoadWindowState()
+    {
+        try
+        {
+            if (!File.Exists(WindowStatePath)) return null;
+            return JsonSerializer.Deserialize<WindowState>(File.ReadAllText(WindowStatePath));
+        }
+        catch { return null; }
+    }
+    private void SaveWindowPlacement()
+    {
+        try
+        {
+            Directory.CreateDirectory(store.DirectoryPath);
+            var state = new WindowState(AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height);
+            File.WriteAllText(WindowStatePath, JsonSerializer.Serialize(state));
+        }
+        catch { }
+    }
+    private void ApplyWindowPlacement()
+    {
+        try
+        {
+            var scale = Root.XamlRoot?.RasterizationScale ?? 1.0;
+            if (scale <= 0) scale = 1.0;
+            var work = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+            var saved = LoadWindowState();
+            if (saved is not null && saved.W >= 320 && saved.H >= 240
+                && DisplayArea.GetFromPoint(new PointInt32(saved.X + 40, saved.Y + 40), DisplayAreaFallback.None) is not null)
+            {
+                // 跟随上次位置；尺寸按当前工作区夹取，避免换了显示器/分辨率后超出屏幕。
+                var w = Math.Min(saved.W, work.Width);
+                var h = Math.Min(saved.H, work.Height);
+                var x = Math.Clamp(saved.X, work.X, work.X + Math.Max(0, work.Width - w));
+                var y = Math.Clamp(saved.Y, work.Y, work.Y + Math.Max(0, work.Height - h));
+                AppWindow.MoveAndResize(new RectInt32(x, y, w, h));
+                return;
+            }
+            var logicalW = Math.Min(860, Math.Max(480, work.Width / scale - 40));
+            var logicalH = Math.Min(740, Math.Max(360, work.Height / scale - 40));
+            var width = (int)(logicalW * scale);
+            var height = (int)(logicalH * scale);
+            AppWindow.MoveAndResize(new RectInt32(
+                work.X + Math.Max(0, (work.Width - width) / 2),
+                work.Y + Math.Max(0, (work.Height - height) / 2),
+                Math.Min(width, work.Width), Math.Min(height, work.Height)));
+        }
+        catch { }
     }
     private async Task Safe(Func<Task> action)
     {
@@ -188,6 +244,7 @@ public sealed partial class MainWindow : Window
     });
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
+        SaveWindowPlacement();
         if (allowClose || !ViewModel.IsLocked) return;
         args.Cancel = true;
         if (showingClose) return;

@@ -116,6 +116,19 @@ await Test("NAS tasks serialize; PC tasks may run alongside", async () =>
     await Task.WhenAll(runs);
 });
 
+await Test("successful task record is cleaned up and removed from the list", async () =>
+{
+    var mock = new FakeWorker { RunState = "succeeded" };
+    var store = new ConfigStore(Path.Combine(scratch, "cleanup"));
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    var source = Path.Combine(scratch, "cleanup.jpg"); await File.WriteAllTextAsync(source, "image");
+    await vm.SetSourcesAsync([source]);
+    await vm.StartAsync();
+    Check(!vm.Tasks.Any(), "Successful task should be removed from the list");
+    Check(!Directory.EnumerateFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Any(), "Task record should be deleted");
+});
+
 var shell = Environment.GetEnvironmentVariable("IMGZIP_TEST_PWSH") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe") : Path.Combine(root, ".tools/pwsh/pwsh"));
 if (!File.Exists(shell)) throw new Exception("PowerShell test runtime missing: " + shell);
 var engineDirectory = Path.Combine(root, "tests/ImgZip.FakeEngine/bin/Release/net10.0");

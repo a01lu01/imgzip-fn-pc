@@ -363,7 +363,12 @@ public partial class MainViewModel : ObservableObject
             task.State = "preparing";
             NotifyTasks();
             await worker.ExecuteAsync(task.Request with { Operation = "run" },
-                e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); }));
+                e => dispatch(() =>
+                {
+                    task.Apply(e); Mirror(task); NotifyTasks();
+                    // 收尾必须在终态事件真正应用之后执行：await 返回时事件可能还没派发。
+                    if (task.TerminalConfirmed) _ = FinalizeTaskAsync(task);
+                }));
         }
         catch (Exception ex)
         {
@@ -375,8 +380,22 @@ public partial class MainViewModel : ObservableObject
         }
         if (task.TerminalConfirmed)
         {
-            await RemoveTaskRecordAsync(task);
-            if (task.State == "succeeded") dispatch(() => { Tasks.Remove(task); taskIndex.Remove(task.JobId); NotifyTasks(); });
+            await FinalizeTaskAsync(task);
+        }
+    }
+    private async Task FinalizeTaskAsync(CompressionTaskViewModel task)
+    {
+        if (task.Finalized) return;
+        task.Finalized = true;
+        await RemoveTaskRecordAsync(task);
+        if (task.State is "succeeded" or "dryRun" or "emptyResult")
+        {
+            dispatch(() =>
+            {
+                Tasks.Remove(task);
+                taskIndex.Remove(task.JobId);
+                NotifyTasks();
+            });
         }
     }
     private CompressionTaskViewModel? PrimaryTask() =>
@@ -390,18 +409,18 @@ public partial class MainViewModel : ObservableObject
         }
         if (!task.CanCancel) return;
         task.State = "cancelling"; NotifyTasks();
-        try { await worker.ExecuteAsync(task.Request with { Operation = "cancel" }, e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); })); }
+        try { await worker.ExecuteAsync(task.Request with { Operation = "cancel" }, e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); if (task.TerminalConfirmed) _ = FinalizeTaskAsync(task); })); }
         catch (Exception ex) { dispatch(() => { if (!task.TerminalConfirmed) { task.State = "unknown"; task.Message = ex.Message; } Mirror(task); NotifyTasks(); }); }
-        if (task.TerminalConfirmed) await RemoveTaskRecordAsync(task);
+        if (task.TerminalConfirmed) await FinalizeTaskAsync(task);
     }
     public async Task InspectTaskAsync(CompressionTaskViewModel task)
     {
         if (!task.CanInspect) return;
         task.Checking = true; NotifyTasks();
-        try { await worker.ExecuteAsync(task.Request with { Operation = "inspect" }, e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); })); }
+        try { await worker.ExecuteAsync(task.Request with { Operation = "inspect" }, e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); if (task.TerminalConfirmed) _ = FinalizeTaskAsync(task); })); }
         catch (Exception ex) { dispatch(() => task.Message = ex.Message); }
         finally { task.Checking = false; NotifyTasks(); }
-        if (task.TerminalConfirmed) await RemoveTaskRecordAsync(task);
+        if (task.TerminalConfirmed) await FinalizeTaskAsync(task);
     }
     public Task CancelAsync() => PrimaryTask() is { } task ? CancelTaskAsync(task) : Task.CompletedTask;
     public Task InspectAsync() => PrimaryTask() is { } task ? InspectTaskAsync(task) : Task.CompletedTask;

@@ -27,6 +27,8 @@ public partial class CompressionTaskViewModel : ObservableObject
     public ObservableCollection<string> Failures { get; } = [];
     /// <summary>终态已确认；此后忽略迟到的 unknown 等事件（与既有单任务语义一致）。</summary>
     public bool TerminalConfirmed { get; set; }
+    /// <summary>终态收尾（删任务记录、成功则移出列表）是否已执行，保证幂等。</summary>
+    public bool Finalized { get; set; }
 
     [ObservableProperty] private string state = "queued";
     [ObservableProperty] private string message = "";

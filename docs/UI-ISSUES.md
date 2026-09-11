@@ -10,7 +10,7 @@
 
 ## 1. 标题栏窗口按钮颜色不对
 
-**状态**：已完成代码改动（待装机验证）
+**状态**：已修复（0.3.1，见第 7 条）
 
 **现象**：右上角最小化 / 最大化 / 关闭三个按钮的非悬停状态正常，但悬停与按下时底色和图标颜色与主题不匹配：出现深灰底配白色图标、与浅色主题其余部分不一致的情况；关闭按钮的红色保持系统默认。
 
@@ -31,6 +31,55 @@
 ## 3. 待补充
 
 **状态**：等待用户描述
+
+## 7. 标题栏右侧出现白块、按钮不可见（第 1 条的真正原因）
+
+**状态**：已修复（0.3.1）
+
+**现象**：应用内切换/跟随为深色主题、而 Windows 系统主题为浅色时，标题栏右侧出现一块白色矩形，最小化/最大化/关闭按钮几乎不可见（白底白图标）。
+
+**定位**：`MainWindow.xaml.cs` 的 `ApplyCaptionTheme()` 只设置了 `AppWindow.TitleBar.Button*` 系列颜色，从未设置**标题栏本身**的 `BackgroundColor` / `InactiveBackgroundColor` / `ForegroundColor` / `InactiveForegroundColor`。而窗口使用 `ExtendsContentIntoTitleBar = false`，标题栏区域由系统按**系统主题**绘制（浅色 → 白底），按钮图标颜色却按应用内 `Root.ActualTheme`（深色 → 白图标）计算，于是出现白底白字；系统与应用主题相反时必然复现。
+
+**修复方向**：在 `ApplyCaptionTheme()` 中同时按应用主题设置标题栏背景与前景——深色用 `#1F1F1F` 背景 / 白色前景，浅色用 `#F3F3F3` 背景 / `#1F1F1F` 前景，并设置非活动态；按钮仍保持 `Transparent` 底色以显示同一背景。需覆盖“系统浅色 + 应用深色”“系统深色 + 应用浅色”两种反向组合，并在 `ApplyTheme()`、`ActualThemeChanged` 与窗口激活时重新应用（`Root.ActualTheme` 的更新时机可能晚于主题切换）。可选的长效方案是改为 `ExtendsContentIntoTitleBar = true` + `SetTitleBar` 自绘标题区，但会牵动布局，先做配色修复。
+
+**已实现（0.3.1）**：`ApplyCaptionTheme()` 现在同时设置标题栏 `BackgroundColor / InactiveBackgroundColor / ForegroundColor / InactiveForegroundColor`（深色 `#1F1F1F` + 白前景、浅色 `#F3F3F3` + `#1F1F1F` 前景），按钮保持透明底，原有的悬停/按下配色不变。需目视确认两种反向主题组合下的观感。
+
+## 8. 非 100% 缩放下默认窗口偏小（DPI 计算时机错误）
+
+**状态**：已修复（0.3.1）
+
+**现象**：在 150% 显示缩放的机器上，应用启动后窗口明显偏小（高约 427 逻辑像素），任务列表一出现就非常挤，用户需要每次手动把窗口拉大。
+
+**定位**：`MainWindow.xaml.cs` 构造函数里在 `Activate()` 之前就调用 `GetDpiForWindow(...)` 计算 `scale`，此时窗口尚未与显示器关联，返回 96（scale=1.0），于是 `AppWindow.Resize(760 × scale, 640 × scale)` 实际按 **760×640 物理像素**创建窗口；在 150% 缩放下只相当于约 507×427 逻辑像素。实测佐证：默认启动窗口为 760×640 物理像素，而当前显示 DPI 为 144（150%）。
+
+**修复方向**：把尺寸计算推迟到窗口已关联显示器之后——在 `Root_Loaded`（或 `Activate()` 之后）用 `Root.XamlRoot.RasterizationScale` 取得真实缩放，再按“逻辑尺寸 × 缩放”调用 `AppWindow.Resize`；同时评估把默认逻辑尺寸从 760×640 提高到能容纳任务列表的值（约 860×760），并可选实现“记住上次窗口大小/位置”（写入 `%LOCALAPPDATA%\ImgZip` 配置，启动时恢复，超出工作区时回退到默认并居中）。
+
+**补充（双屏实测，已用 Windows 屏幕设置核对）**：用户环境两块显示器**均为 150% 缩放**——
+
+- 主屏（Windows 显示 2）：**3840×2160**，逻辑工作区约 **2560×1400**，位置 (0,0)
+- 副屏（Windows 显示 1）：**1440×2560 竖屏**，逻辑工作区约 **960×1667**，位置在左侧
+
+此前脚本里读到的 2560×1440 / 960×1707 是 DPI 虚拟化后的逻辑值（脚本进程 DPI 不感知），不是物理分辨率；ImgZip 窗口实测 DPI 144，与 150% 缩放一致。因此**不能写死物理尺寸**：同一尺寸在 4K 主屏与 960 逻辑宽的竖屏上表现完全不同，竖屏按 150% 换算会超出屏宽。修复必须“按窗口所在显示器”计算：取该显示器的缩放与工作区，尺寸 = `min(逻辑默认值, 工作区逻辑尺寸 - 边距)` × 缩放，并夹取到工作区内再居中；同时用 `DisplayArea.GetFromWindowId(AppWindow.Id, Fallback.Nearest)` 而不是固定 `Primary`，避免窗口被强制放到主屏。记忆位置时也要用 `DisplayArea.GetFromPoint` 校验保存的矩形仍落在某个显示器可见区域内，否则回退默认并居中。
+
+**已实现（0.3.1）**：尺寸计算从构造函数移到窗口加载后（`Root_Loaded`）执行，使用 `Root.XamlRoot.RasterizationScale` 与窗口所在显示器的 `WorkArea`；默认逻辑尺寸提升为 **860×740**，并夹取到工作区（保留 40px 边距，最小 480×360）；新增窗口状态记忆——关闭时把物理矩形写入 `%LOCALAPPDATA%\ImgZip\window-state.json`，启动时若该矩形仍落在某个显示器可见区域（`DisplayArea.GetFromPoint`）则恢复并夹取，否则回退默认并居中。用户选择的位置策略为**跟随上次位置**。
+
+**验证结果**：首启窗口为 860×740 逻辑（150% → 1290×1110 物理，居中）；关窗后状态文件写入 `{"X":1275,"Y":555,"W":1290,"H":1110}`；重开后恢复到同一位置与尺寸。
+
+## 9. 已完成的任务残留为“状态待确认”
+
+**状态**：已修复（0.3.1）
+
+**现象**：完成一次任务后重新打开窗口，上一次**已成功**的任务仍留在列表里并显示“状态待确认”，需要点“重新检查”才能消掉；与约定“成功任务自动移除、只保留失败/取消/待确认”不符。
+
+**现场证据**：`%LOCALAPPDATA%\ImgZip\tasks\f83da2dcccac4116847f2341bf56a57f.json` 残留（engine=pc、operation=run，来源为 `\\WHY-FN\Other\...\清水凪 - 后辈的制服4`），而 `active-job.json` 已被正确删除；`jobs\` 下有 9 个任务目录。
+
+**定位（清理时机竞态）**：`MainViewModel.RunTaskAsync` 在 `await worker.ExecuteAsync(...)` 返回后立即检查 `task.TerminalConfirmed`，但 worker 事件是通过 `dispatch(() => { task.Apply(e); Mirror(task); })` 投递到 UI 线程的——`ExecuteAsync` 返回时终态事件可能**还没被派发执行**，于是 `TerminalConfirmed` 仍为 false，`tasks/<jobId>.json` 就不会被删除、任务也不会从列表移除。稍后事件派发执行时 `Mirror()` 删掉了 `active-job.json`，但已经没有任何代码去清理 `tasks/<jobId>.json`，导致下次启动时 `RecoverTasksAsync` 把它恢复成 `unknown` 任务。
+
+**修复方向**：把“终态收尾”从 `RunTaskAsync` 的 await 之后移到**终态事件被应用之后**执行——在 `dispatch(() => { task.Apply(e); Mirror(task); })` 内判断 `task.TerminalConfirmed` 并调用幂等的 `FinalizeTaskAsync(task)`（删除 `tasks/<id>.json`、成功则从 `Tasks` 移除、刷新 `TaskSummary`）；`RunTaskAsync`/`CancelTaskAsync`/`InspectTaskAsync` 尾部保留一次幂等调用兜底。给任务加 `Finalized` 标志避免重复收尾。保留策略维持：`failed/partial/cancelled/unknown` 保留，`succeeded/dryRun/emptyResult` 自动移除。
+
+**附带处理**：用户机器上那条残留记录可手动删除（或等修复版启动后由代码清理）；修复时需要同时处理“启动恢复时若任务记录对应 worker 已是终态则自动收尾”的情况，避免旧记录长期堆积。
+
+**已实现（0.3.1）**：新增幂等的 `FinalizeTaskAsync(task)`（`Finalized` 标志防重复），并在 `task.Apply(e)` 之后、终态确认时立即执行收尾——删除 `tasks/<id>.json`；`succeeded / dryRun / emptyResult` 从任务列表移除，`failed / partial / cancelled / unknown` 保留；`RunTaskAsync / CancelTaskAsync / InspectTaskAsync` 尾部保留幂等兜底调用。新增回归用例“成功任务收尾后列表为空且任务记录被删除”，测试总数 15 项全部通过；用户机器上那条残留记录已清除。
 
 # 后续版本
 
