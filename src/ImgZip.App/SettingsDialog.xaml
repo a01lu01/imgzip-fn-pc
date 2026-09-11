@@ -15,6 +15,9 @@
       <TextBlock Text="仅保存私钥路径，不复制密钥。连接测试使用当前输入，但不会保存。" Style="{StaticResource SecondaryText}" />
       <TextBlock Text="引擎说明" FontSize="15" FontWeight="SemiBold" Margin="0,8,0,0" />
       <TextBlock Text="本机引擎随安装包部署。NAS 需启用 SSH 公钥认证，并将 caesiumclt 安装到 ~/bin/caesiumclt；还需 Bash、GNU find/stat 和 setsid。可继续使用原项目的 imgzip-remote.ps1 -Setup 安装 NAS 引擎。" Style="{StaticResource SecondaryText}" />
+      <TextBlock Text="性能" FontSize="15" FontWeight="SemiBold" Margin="0,8,0,0" />
+      <NumberBox x:Name="ConcurrencyField" Header="PC 并行任务数（0 = 自动，等于 CPU 核数）" Minimum="0" Maximum="64" SpinButtonPlacementMode="Compact" />
+      <TextBlock Text="NAS 任务始终串行（同时最多一个），可与 PC 任务并行。" Style="{StaticResource SecondaryText}" />
     </StackPanel>
   </ScrollViewer>
 </ContentDialog>

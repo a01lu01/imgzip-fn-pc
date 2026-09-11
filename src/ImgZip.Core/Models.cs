@@ -23,11 +23,14 @@ public sealed record AppConfig
     public string KeyPath { get; init; } = "";
     public int Port { get; init; } = 22;
     public string Theme { get; init; } = "system";
+    /// <summary>PC 并行任务数；0 = 自动（等于 CPU 核数）。</summary>
+    public int PcConcurrency { get; init; }
     public AppConfig Normalize() => this with
     {
         Server = (Server ?? "").Trim(), User = (User ?? "").Trim(), NasIp = (NasIp ?? "").Trim(),
         KeyPath = (KeyPath ?? "").Trim(), NasHosts = NasHosts ?? [],
-        Theme = Theme is "light" or "dark" ? Theme : "system"
+        Theme = Theme is "light" or "dark" ? Theme : "system",
+        PcConcurrency = PcConcurrency is 0 or (> 0 and <= 64) ? PcConcurrency : 0
     };
     public string? ValidateConnection()
     {

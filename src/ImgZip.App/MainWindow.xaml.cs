@@ -110,6 +110,23 @@ public sealed partial class MainWindow : Window
     private async void Start_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.StartAsync);
     private async void Cancel_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.CancelAsync);
     private async void Inspect_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.InspectAsync);
+    private static CompressionTaskViewModel? TaskOf(object sender) => (sender as FrameworkElement)?.DataContext as CompressionTaskViewModel;
+    private async void TaskCancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is { } task) await Safe(() => ViewModel.CancelTaskAsync(task));
+    }
+    private async void TaskInspect_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is { } task) await Safe(() => ViewModel.InspectTaskAsync(task));
+    }
+    private void TaskOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is { } task) OpenFolder(task.OpenOutputPath);
+    }
+    private async void TaskFailures_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is { } task) await ShowFailuresAsync(task.Failures);
+    }
     private void SyncEngineButtons()
     {
         synchronizingEngine = true;
@@ -141,21 +158,26 @@ public sealed partial class MainWindow : Window
     }
     private void OpenOutput_Click(object sender, RoutedEventArgs e)
     {
+        OpenFolder(ViewModel.OpenOutputPath);
+    }
+    private void OpenFolder(string path)
+    {
         try
         {
-            if (!Directory.Exists(ViewModel.OpenOutputPath)) { ViewModel.Message = "输出目录当前不可访问，请检查共享连接。"; return; }
+            if (!Directory.Exists(path)) { ViewModel.Message = "输出目录当前不可访问，请检查共享连接。"; return; }
             var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
-            start.ArgumentList.Add(ViewModel.OpenOutputPath);
+            start.ArgumentList.Add(path);
             Process.Start(start)?.Dispose();
         }
         catch (Exception ex) { ViewModel.Message = ex.Message; }
     }
-    private async void Failures_Click(object sender, RoutedEventArgs e) => await Safe(async () =>
+    private async void Failures_Click(object sender, RoutedEventArgs e) => await ShowFailuresAsync(ViewModel.Failures);
+    private async Task ShowFailuresAsync(IEnumerable<string> failures) => await Safe(async () =>
     {
         var dialog = new ContentDialog
         {
             XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme, Title = "未完成的图片", CloseButtonText = "关闭",
-            Content = new ScrollViewer { MaxHeight = 350, Content = new TextBlock { Text = string.Join("\n\n", ViewModel.Failures), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true } }
+            Content = new ScrollViewer { MaxHeight = 350, Content = new TextBlock { Text = string.Join("\n\n", failures), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true } }
         };
         await dialog.ShowAsync();
     });

@@ -50,7 +50,7 @@ await Test("protocol rejects wrong identity, version, counters and malformed JSO
     Check(Display.Summary(valid).Contains("增加"), "Larger output reported as savings");
     return Task.CompletedTask;
 });
-await Test("unknown task locks inputs; inspection recovers; confirmed terminal is sticky", async () =>
+await Test("unknown task retained; draft stays editable; inspection recovers", async () =>
 {
     var mock = new FakeWorker();
     var store = new ConfigStore(Path.Combine(scratch, "vm"));
@@ -59,19 +59,61 @@ await Test("unknown task locks inputs; inspection recovers; confirmed terminal i
     var path = Path.Combine(scratch, "vm-image.jpg"); await File.WriteAllTextAsync(path, "image");
     await vm.SetSourcesAsync([path]);
     await vm.StartAsync();
-    Check(vm.IsUnknown && !vm.CanEdit && File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Unknown task was not protected");
-    vm.ClearSources(); Check(vm.SourcePath == path, "Locked source was changed");
-    await vm.InspectAsync(); Check(vm.State == "succeeded" && vm.CanEdit, "Inspection did not recover");
+    Check(vm.IsUnknown && vm.Tasks.Any(t => t.IsUnknown), "Unknown task was not retained");
+    Check(File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Legacy marker missing for unresolved task");
+    vm.ClearSources(); Check(vm.SourcePath != path, "Draft should stay editable while a task is unresolved");
+    await vm.InspectAsync(); Check(vm.State == "succeeded" && !vm.Tasks.Any(t => t.IsUnknown), "Inspection did not recover");
     Check(!File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Confirmed task marker retained");
-    vm.Apply(new WorkerEvent { JobId = mock.JobId, Type = "finished", State = "unknown" });
+    var jobId = mock.JobId;
+    vm.Apply(new WorkerEvent { JobId = jobId, Type = "finished", State = "unknown" });
     Check(vm.State == "succeeded", "Late unknown replaced confirmed success");
     mock.PauseRun = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    await vm.SetSourcesAsync([path]);
     var running = vm.StartAsync();
-    Check(vm.IsLocked, "Start did not lock inputs before its first await");
     await vm.SetSourcesAsync([Path.Combine(scratch, "replacement.jpg")]);
-    Check(vm.SourcePath == path, "Preparing job accepted another source");
-    await vm.StartAsync();
+    Check(vm.SourcePath.EndsWith("replacement.jpg"), "Draft should accept new sources while a task runs");
     mock.PauseRun.SetResult(); await running;
+});
+
+await Test("PC concurrency respects configured limit and queues the rest", async () =>
+{
+    var mock = new FakeWorker { HoldRuns = true };
+    var store = new ConfigStore(Path.Combine(scratch, "mt"));
+    await store.SaveAsync(new AppConfig { PcConcurrency = 2 });
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    var runs = new List<Task>();
+    for (var i = 0; i < 3; i++)
+    {
+        var source = Path.Combine(scratch, $"mt{i}.jpg"); await File.WriteAllTextAsync(source, "image");
+        await vm.SetSourcesAsync([source]);
+        runs.Add(vm.StartAsync());
+    }
+    await Task.Delay(600);
+    Check(mock.MaxActiveRuns == 2, $"PC concurrency limit not respected: {mock.MaxActiveRuns}");
+    Check(vm.Tasks.Count(t => t.IsQueued) == 1, "Excess PC task should stay queued");
+    mock.ReleaseRuns();
+    await Task.WhenAll(runs);
+});
+
+await Test("NAS tasks serialize; PC tasks may run alongside", async () =>
+{
+    var mock = new FakeWorker { HoldRuns = true };
+    var store = new ConfigStore(Path.Combine(scratch, "mt-nas"));
+    await store.SaveAsync(new AppConfig { Server = "nas.local", User = "why", KeyPath = @"C:\keys\id_nas", NasHosts = ["nas.local"] });
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    var runs = new List<Task>();
+    foreach (var share in new[] { @"\\nas.local\photos\a.jpg", @"\\nas.local\photos\b.jpg" })
+    {
+        await vm.SetSourcesAsync([share]);
+        vm.EngineIndex = 1;
+        runs.Add(vm.StartAsync());
+    }
+    await Task.Delay(600);
+    Check(mock.MaxActiveNas <= 1, $"NAS tasks overlapped: {mock.MaxActiveNas}");
+    mock.ReleaseRuns();
+    await Task.WhenAll(runs);
 });
 
 var shell = Environment.GetEnvironmentVariable("IMGZIP_TEST_PWSH") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe") : Path.Combine(root, ".tools/pwsh/pwsh"));
@@ -211,14 +253,43 @@ sealed class FakeWorker : IWorkerClient
 {
     public string JobId { get; private set; } = "";
     public TaskCompletionSource? PauseRun { get; set; }
+    public string RunState { get; set; } = "unknown";
+    public bool HoldRuns { get; set; }
+    public int ActiveRuns;
+    public int MaxActiveRuns;
+    public int ActiveNas;
+    public int MaxActiveNas;
+    private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public void ReleaseRuns() => release.TrySetResult();
     public async Task ExecuteAsync(WorkerRequest request, Action<WorkerEvent> onEvent)
     {
-        if (request.Operation == "probe") onEvent(new() { JobId = request.JobId, Type = "probe", PcAvailable = true });
-        else
+        if (request.Operation == "probe") { onEvent(new() { JobId = request.JobId, Type = "probe", PcAvailable = true, NasAvailable = true, Connected = true }); return; }
+        JobId = request.JobId;
+        if (request.Operation == "cancel") { onEvent(new() { JobId = request.JobId, Type = "finished", State = "cancelled" }); return; }
+        if (request.Operation == "inspect") { onEvent(new() { JobId = request.JobId, Type = "finished", State = "succeeded" }); return; }
+        var tracked = request.Operation == "run";
+        if (tracked)
         {
-            JobId = request.JobId;
-            if (request.Operation == "run" && PauseRun is not null) await PauseRun.Task;
-            onEvent(new() { JobId = request.JobId, Type = "finished", State = request.Operation == "inspect" ? "succeeded" : "unknown" });
+            Interlocked.Increment(ref ActiveRuns);
+            MaxActiveRuns = Math.Max(MaxActiveRuns, ActiveRuns);
+            if (request.Engine == "nas") { Interlocked.Increment(ref ActiveNas); MaxActiveNas = Math.Max(MaxActiveNas, ActiveNas); }
+            onEvent(new() { JobId = request.JobId, Type = "manifest", State = "ready", Total = 1, Completed = 0 });
+        }
+        try
+        {
+            if (tracked && PauseRun is not null) await PauseRun.Task;
+            if (tracked && HoldRuns) await release.Task;
+            var state = tracked ? RunState : "unknown";
+            if (tracked) onEvent(new() { JobId = request.JobId, Type = "file", State = state == "failed" ? "failed" : "succeeded", Index = 0, Total = 1, Completed = 1, Succeeded = state == "failed" ? 0 : 1, Failed = state == "failed" ? 1 : 0 });
+            onEvent(new() { JobId = request.JobId, Type = "finished", State = state, Total = tracked ? 1 : 0, Completed = tracked ? 1 : 0, Succeeded = tracked && state != "failed" ? 1 : 0, Failed = tracked && state == "failed" ? 1 : 0 });
+        }
+        finally
+        {
+            if (tracked)
+            {
+                Interlocked.Decrement(ref ActiveRuns);
+                if (request.Engine == "nas") Interlocked.Decrement(ref ActiveNas);
+            }
         }
     }
 }

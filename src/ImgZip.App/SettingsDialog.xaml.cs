@@ -17,14 +17,17 @@ public sealed partial class SettingsDialog : ContentDialog
     {
         ServerField.Text = config.Server; UserField.Text = config.User; KeyField.Text = config.KeyPath;
         PortField.Value = config.Port; HostsField.Text = string.Join(", ", config.NasHosts); IpField.Text = config.NasIp;
+        ConcurrencyField.Value = config.PcConcurrency;
     }
     private AppConfig Read()
     {
         if (!double.IsFinite(PortField.Value) || PortField.Value != Math.Truncate(PortField.Value) || PortField.Value is < 1 or > 65535) throw new ArgumentException("SSH 端口需为 1–65535 的整数。");
+        if (!double.IsFinite(ConcurrencyField.Value) || ConcurrencyField.Value != Math.Truncate(ConcurrencyField.Value) || ConcurrencyField.Value is < 0 or > 64) throw new ArgumentException("PC 并行任务数需为 0–64 的整数（0 = 自动）。");
         return new AppConfig
         {
             Server = ServerField.Text, User = UserField.Text, Port = (int)PortField.Value, KeyPath = KeyField.Text,
-            NasIp = IpField.Text, NasHosts = HostsField.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), Theme = model.Config.Theme
+            NasIp = IpField.Text, NasHosts = HostsField.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), Theme = model.Config.Theme,
+            PcConcurrency = (int)ConcurrencyField.Value
         }.Normalize();
     }
     private void Info(string message, InfoBarSeverity severity)

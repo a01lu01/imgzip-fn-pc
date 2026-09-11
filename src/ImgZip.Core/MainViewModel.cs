@@ -10,13 +10,14 @@ public partial class MainViewModel : ObservableObject
     private readonly ConfigStore store;
     private readonly string enginePath;
     private readonly Action<Action> dispatch;
-    private WorkerRequest? activeRequest;
+    private readonly Dictionary<string, CompressionTaskViewModel> taskIndex = new(StringComparer.Ordinal);
+    private WorkerRequest? primaryRequest;
     private string[] sources = [];
     private bool initializing = true;
     private bool hasConfigurationError;
-    private bool terminalConfirmed;
     private int probeGeneration;
     private string PendingPath => Path.Combine(store.DirectoryPath, "active-job.json");
+    private string TasksPath => Path.Combine(store.DirectoryPath, "tasks");
 
     [ObservableProperty] private AppConfig config = new();
     [ObservableProperty] private string state = "empty";
@@ -47,6 +48,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int completed;
     [ObservableProperty] private string preset = "archive-jpeg";
     public ObservableCollection<string> Failures { get; } = [];
+    public ObservableCollection<CompressionTaskViewModel> Tasks { get; } = [];
 
     public MainViewModel(IWorkerClient worker, ConfigStore store, string enginePath, Action<Action>? dispatch = null)
     {
@@ -54,19 +56,24 @@ public partial class MainViewModel : ObservableObject
         this.dispatch = dispatch ?? (action => action());
         initializing = false;
     }
+
+    // ---- 草稿（新建任务）状态 ----
     public bool IsRunning => State is "preparing" or "running" or "cancelling";
     public bool IsLocked => IsRunning || State == "unknown";
     public bool IsUnknown => State == "unknown";
     public bool CanEdit => !IsLocked;
     public bool CanStart => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
+    /// <summary>草稿是否可启动新任务：多任务下不再受“运行中”限制。</summary>
+    public bool CanStartTask => sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
     public bool CanCancel => State is "preparing" or "running";
     public bool CanInspect => State == "unknown" && !Checking;
     public bool CanOpenOutput => !IsLocked && State is "succeeded" or "partial" && !string.IsNullOrEmpty(OpenOutputPath);
     public bool HasMessage => !string.IsNullOrEmpty(Message);
     public bool HasFailures => Failures.Count > 0;
+    public bool HasTasks => Tasks.Count > 0;
     public bool IsIndeterminate => State == "preparing" || (IsRunning && Total == 0);
-    public bool CanSetQuality => CanEdit && !Lossless;
-    public bool CanResize => CanEdit && ResizeIndex != 0;
+    public bool CanSetQuality => !Lossless;
+    public bool CanResize => ResizeIndex != 0;
     public bool NasEligible => !string.IsNullOrWhiteSpace(Config.Server) && sources.Length > 0 && sources.All(p => p.StartsWith(@"\\") || LooksLikeMappedDrive(p));
     public bool JpegSelected => Preset == "archive-jpeg";
     public bool WebpSelected => Preset == "archive-webp";
@@ -74,6 +81,17 @@ public partial class MainViewModel : ObservableObject
     public double Progress => Total == 0 ? 0 : 100d * Completed / Total;
     public string ProgressText => $"{Completed} / {Total}";
     public string StartText => DryRun ? "开始预演" : "开始压缩";
+    public int EffectivePcConcurrency => Config.PcConcurrency is > 0 and <= 64 ? Config.PcConcurrency : Math.Max(1, Environment.ProcessorCount);
+    public string TaskSummary
+    {
+        get
+        {
+            if (Tasks.Count == 0) return "暂无任务";
+            var running = Tasks.Count(t => t.IsRunning);
+            var queued = Tasks.Count(t => t.IsQueued);
+            return $"{running} 个进行中 · {queued} 个排队 · 共 {Tasks.Count} 个任务（PC 并发 {EffectivePcConcurrency}）";
+        }
+    }
     public string StateTitle => State switch
     {
         "empty" => "添加图片即可开始", "ready" => "准备就绪", "preparing" => "正在准备…", "running" => DryRun ? "正在预演…" : "正在压缩…",
@@ -99,28 +117,60 @@ public partial class MainViewModel : ObservableObject
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
+    private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); }
+
     public async Task InitializeAsync()
     {
         try { Config = await store.LoadAsync(); }
         catch (Exception ex) { hasConfigurationError = true; Message = $"配置无法读取，原文件已保留。请在设置中导入或保存有效配置：{ex.Message}"; }
+        await RecoverTasksAsync();
+        await ProbeSelectedAsync();
+    }
+    private async Task RecoverTasksAsync()
+    {
+        if (Directory.Exists(TasksPath))
+        {
+            foreach (var file in Directory.EnumerateFiles(TasksPath, "*.json"))
+            {
+                try
+                {
+                    var request = Wire.Decode<WorkerRequest>(await File.ReadAllTextAsync(file));
+                    AddRecovered(request, "上次任务尚未确认完成，请重新检查。");
+                }
+                catch { }
+            }
+        }
         if (File.Exists(PendingPath))
         {
             try
             {
-                activeRequest = Wire.Decode<WorkerRequest>(await File.ReadAllTextAsync(PendingPath));
-                sources = activeRequest.Sources; EngineIndex = activeRequest.Engine == "nas" ? 1 : 0;
-                SourceTitle = "尚未确认完成的任务"; SourcePath = string.Join("; ", sources);
-                State = "unknown"; Message = "发现上次尚未确认完成的任务。请先重新检查状态。";
+                var request = Wire.Decode<WorkerRequest>(await File.ReadAllTextAsync(PendingPath));
+                if (!taskIndex.ContainsKey(request.JobId))
+                {
+                    sources = request.Sources; EngineIndex = request.Engine == "nas" ? 1 : 0;
+                }
             }
-            catch (Exception ex) { State = "unknown"; Message = $"任务记录无法读取，请保留记录并检查：{ex.Message}"; }
+            catch (Exception ex) { Message = $"任务记录无法读取，请保留记录并检查：{ex.Message}"; }
         }
-        await ProbeSelectedAsync();
+        NotifyTasks();
+    }
+    private CompressionTaskViewModel AddRecovered(WorkerRequest request, string message)
+    {
+        var task = new CompressionTaskViewModel(request, request.Engine == "nas" ? 1 : 0)
+        {
+            State = "unknown",
+            Message = message,
+            ResultSummary = "状态待确认"
+        };
+        taskIndex[task.JobId] = task;
+        Tasks.Add(task);
+        SetPrimary(task, writeMarker: false);
+        return task;
     }
     public void SelectPreset(string name)
     {
-        if (!CanEdit) return;
         var options = CompressionOptions.ForPreset(name, new());
         initializing = true;
         FormatIndex = options.Format == "jpeg" ? 1 : 2; Quality = options.Quality; ResizeIndex = 1; Pixels = options.Pixels;
@@ -129,7 +179,6 @@ public partial class MainViewModel : ObservableObject
     }
     public async Task SetSourcesAsync(IEnumerable<string> selection)
     {
-        if (!CanEdit) { Message = "当前任务尚未结束，本次来源未载入。"; return; }
         var paths = selection.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (paths.Length == 0) return;
         if (paths.Length > 1 && (paths.Any(Directory.Exists) || paths.Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1))
@@ -138,17 +187,15 @@ public partial class MainViewModel : ObservableObject
         SourceTitle = paths.Length > 1 ? $"已选择 {paths.Length} 张图片" : Path.GetFileName(paths[0].TrimEnd(Path.DirectorySeparatorChar));
         SourcePath = string.Join("; ", paths); SourceSummary = "开始前将统计当前处理范围";
         OutputPath = "源目录_compressed（已存在时自动编号）";
-        State = "ready"; Message = ""; ResultSummary = "原始图片保持不变"; Failures.Clear();
-        // NAS is preferred only for a configured share; the worker validates ownership before execution.
+        State = "ready"; Message = ""; ResultSummary = "原始图片保持不变";
         EngineIndex = NasEligible ? 1 : 0;
         NotifyDerived();
         await ProbeSelectedAsync();
     }
     public void ClearSources()
     {
-        if (!CanEdit) return;
         sources = []; State = "empty"; SourceTitle = "将图片或文件夹拖到这里"; SourcePath = "支持 JPG、PNG、WebP、GIF";
-        SourceSummary = "添加来源后开始"; OutputPath = "选择来源后自动生成"; Failures.Clear(); Message = ""; NotifyDerived();
+        SourceSummary = "添加来源后开始"; OutputPath = "选择来源后自动生成"; Message = ""; NotifyDerived();
     }
     private WorkerRequest Request(string operation, string? engine = null) => new()
     {
@@ -157,7 +204,6 @@ public partial class MainViewModel : ObservableObject
     };
     public async Task ProbeSelectedAsync()
     {
-        if (IsRunning) return;
         var generation = ++probeGeneration;
         var request = Request("probe");
         EngineStatus = "正在检测…";
@@ -185,8 +231,6 @@ public partial class MainViewModel : ObservableObject
     }
     public async Task SaveConnectionAsync(AppConfig draft)
     {
-        if (!CanEdit) return;
-        // Saving an empty NAS configuration is allowed for PC-only use.
         if (!string.IsNullOrWhiteSpace(draft.Server) && draft.ValidateConnection() is { } validation) throw new ArgumentException(validation);
         var updated = draft.Normalize() with { Theme = Config.Theme };
         if (hasConfigurationError && File.Exists(store.FilePath)) File.Copy(store.FilePath, store.FilePath + $".invalid-{DateTime.Now:yyyyMMddHHmmss}", false);
@@ -219,89 +263,153 @@ public partial class MainViewModel : ObservableObject
     }
     public async Task StartAsync()
     {
-        if (!CanStart) return;
-        var previousState = State;
-        var createdMarker = false;
+        if (!CanStartTask) return;
         try
         {
             var options = BuildOptions();
             if (options.Validate() is { } validation) throw new ArgumentException(validation);
             if (EngineIndex == 1 && Config.ValidateConnection() is { } connectionError) throw new ArgumentException(connectionError);
-            activeRequest = Request("run") with { Options = options };
-            // Lock before the first asynchronous write, including a second Start click.
-            terminalConfirmed = false;
-            State = "preparing";
-            Directory.CreateDirectory(store.DirectoryPath);
-            // Do not overwrite an unresolved job, including one from another process.
-            await using (var stream = new FileStream(PendingPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            await using (var writer = new StreamWriter(stream)) { createdMarker = true; await writer.WriteAsync(Wire.Encode(activeRequest)); }
+            var request = Request("run") with { Options = options };
+            if (TryFocusDuplicate(request.Sources)) return;
+            var task = new CompressionTaskViewModel(request, EngineIndex);
+            taskIndex[task.JobId] = task;
+            Tasks.Insert(0, task);
+            SetPrimary(task, writeMarker: true);
+            await PersistTaskAsync(task);
+            Message = ""; NotifyDerived(); NotifyTasks();
+            await RunTaskAsync(task);
+        }
+        catch (Exception ex) { Message = ex.Message; }
+    }
+    private bool TryFocusDuplicate(string[] requested)
+    {
+        var existing = Tasks.FirstOrDefault(t => !t.TerminalConfirmed
+            && t.Request.Sources.Length == requested.Length
+            && t.Request.Sources.Select(Path.GetFullPath).OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .SequenceEqual(requested.Select(Path.GetFullPath).OrderBy(p => p, StringComparer.OrdinalIgnoreCase)));
+        if (existing is null) return false;
+        Message = $"该来源已在任务列表中（{existing.StateTitle}），未重复加入。";
+        return true;
+    }
+    private async Task PersistTaskAsync(CompressionTaskViewModel task)
+    {
+        Directory.CreateDirectory(TasksPath);
+        var file = Path.Combine(TasksPath, task.JobId + ".json");
+        var temporary = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        await File.WriteAllTextAsync(temporary, Wire.Encode(task.Request));
+        File.Move(temporary, file, true);
+    }
+    private async Task RemoveTaskRecordAsync(CompressionTaskViewModel task)
+    {
+        try
+        {
+            var file = Path.Combine(TasksPath, task.JobId + ".json");
+            if (File.Exists(file)) File.Delete(file);
+        }
+        catch { }
+        await Task.CompletedTask;
+    }
+    private void SetPrimary(CompressionTaskViewModel task, bool writeMarker)
+    {
+        primaryRequest = task.Request;
+        State = task.State; Total = task.Total; Completed = task.Completed; CurrentFile = task.CurrentFile;
+        Message = task.Message; ResultSummary = task.ResultSummary; OutputPath = task.OutputPath; OpenOutputPath = task.OpenOutputPath;
+        if (writeMarker)
+        {
+            try
+            {
+                Directory.CreateDirectory(store.DirectoryPath);
+                File.WriteAllText(PendingPath, Wire.Encode(task.Request));
+            }
+            catch { }
+        }
+    }
+    private void Mirror(CompressionTaskViewModel task)
+    {
+        if (primaryRequest is null || task.JobId != primaryRequest.JobId) return;
+        State = task.State; Total = task.Total; Completed = task.Completed; CurrentFile = task.CurrentFile;
+        Message = task.Message; ResultSummary = task.ResultSummary; OutputPath = task.OutputPath; OpenOutputPath = task.OpenOutputPath;
+        if (Failures.Count != task.Failures.Count)
+        {
+            Failures.Clear();
+            foreach (var failure in task.Failures) Failures.Add(failure);
+        }
+        if (task.TerminalConfirmed)
+        {
+            try { if (File.Exists(PendingPath)) File.Delete(PendingPath); } catch { }
+        }
+        NotifyDerived(); NotifyTasks();
+    }
+    private async Task WaitForSlotAsync(CompressionTaskViewModel task)
+    {
+        while (true)
+        {
+            var runningPc = taskIndex.Values.Count(t => t.EngineIndex == 0 && t.IsRunning);
+            var runningNas = taskIndex.Values.Count(t => t.EngineIndex == 1 && t.IsRunning);
+            if (task.EngineIndex == 1 ? runningNas == 0 : runningPc < EffectivePcConcurrency) return;
+            await Task.Delay(150);
+        }
+    }
+    private async Task RunTaskAsync(CompressionTaskViewModel task)
+    {
+        try
+        {
+            await WaitForSlotAsync(task);
+            var cores = Math.Max(1, Environment.ProcessorCount);
+            var active = taskIndex.Values.Count(t => t.IsRunning) + 1;
+            var threads = Math.Max(1, cores / Math.Min(active, cores));
+            task.Request = task.Request with { Options = task.Request.Options with { Threads = threads } };
+            if (primaryRequest is not null && primaryRequest.JobId == task.JobId) primaryRequest = task.Request;
+            task.State = "preparing";
+            NotifyTasks();
+            await worker.ExecuteAsync(task.Request with { Operation = "run" },
+                e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); }));
         }
         catch (Exception ex)
         {
-            if (createdMarker) { try { File.Delete(PendingPath); } catch { } }
-            State = File.Exists(PendingPath) ? "unknown" : previousState;
-            Message = ex.Message; return;
+            dispatch(() =>
+            {
+                if (!task.TerminalConfirmed) { task.State = "unknown"; task.Message = ex.Message; }
+                Mirror(task); NotifyTasks();
+            });
         }
-        terminalConfirmed = false; OpenOutputPath = "";
-        if (State != "cancelling") State = "preparing";
-        Message = ""; Total = 0; Completed = 0; Failures.Clear(); CurrentFile = ""; ResultSummary = "正在准备本次任务";
-        await RunRequestAsync(activeRequest);
+        if (task.TerminalConfirmed)
+        {
+            await RemoveTaskRecordAsync(task);
+            if (task.State == "succeeded") dispatch(() => { Tasks.Remove(task); taskIndex.Remove(task.JobId); NotifyTasks(); });
+        }
     }
-    private async Task RunRequestAsync(WorkerRequest request)
+    private CompressionTaskViewModel? PrimaryTask() =>
+        primaryRequest is null ? null : (taskIndex.TryGetValue(primaryRequest.JobId, out var task) ? task : null);
+    public async Task CancelTaskAsync(CompressionTaskViewModel task)
     {
-        try { await worker.ExecuteAsync(request, e => dispatch(() => Apply(e))); }
-        catch (Exception ex) { dispatch(() => { if (!terminalConfirmed) { State = "unknown"; Message = ex.Message; } }); }
+        if (task.IsQueued)
+        {
+            Tasks.Remove(task); taskIndex.Remove(task.JobId);
+            await RemoveTaskRecordAsync(task); NotifyTasks(); return;
+        }
+        if (!task.CanCancel) return;
+        task.State = "cancelling"; NotifyTasks();
+        try { await worker.ExecuteAsync(task.Request with { Operation = "cancel" }, e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); })); }
+        catch (Exception ex) { dispatch(() => { if (!task.TerminalConfirmed) { task.State = "unknown"; task.Message = ex.Message; } Mirror(task); NotifyTasks(); }); }
+        if (task.TerminalConfirmed) await RemoveTaskRecordAsync(task);
     }
-    public async Task CancelAsync()
+    public async Task InspectTaskAsync(CompressionTaskViewModel task)
     {
-        if (!CanCancel || activeRequest is null) return;
-        State = "cancelling";
-        // The run stream provides local confirmation. A NAS cancel also reads its durable journal.
-        try { await worker.ExecuteAsync(activeRequest with { Operation = "cancel" }, e => dispatch(() => Apply(e))); }
-        catch (Exception ex) { dispatch(() => { if (!terminalConfirmed) { State = "unknown"; Message = ex.Message; } }); }
+        if (!task.CanInspect) return;
+        task.Checking = true; NotifyTasks();
+        try { await worker.ExecuteAsync(task.Request with { Operation = "inspect" }, e => dispatch(() => { task.Apply(e); Mirror(task); NotifyTasks(); })); }
+        catch (Exception ex) { dispatch(() => task.Message = ex.Message); }
+        finally { task.Checking = false; NotifyTasks(); }
+        if (task.TerminalConfirmed) await RemoveTaskRecordAsync(task);
     }
-    public async Task InspectAsync()
-    {
-        if (!CanInspect || activeRequest is null) return;
-        Checking = true;
-        await RunRequestAsync(activeRequest with { Operation = "inspect" });
-        Checking = false;
-    }
+    public Task CancelAsync() => PrimaryTask() is { } task ? CancelTaskAsync(task) : Task.CompletedTask;
+    public Task InspectAsync() => PrimaryTask() is { } task ? InspectTaskAsync(task) : Task.CompletedTask;
     public void Apply(WorkerEvent e)
     {
-        if (activeRequest is null || e.JobId != activeRequest.JobId || terminalConfirmed) return;
-        if (e.Type == "phase" && State != "cancelling") State = "preparing";
-        if (e.Type is "manifest" or "file")
+        if (taskIndex.TryGetValue(e.JobId, out var task))
         {
-            Total = e.Total; Completed = e.Completed;
-            if (!string.IsNullOrEmpty(e.Output)) OutputPath = e.Output;
-            SourceSummary = $"{e.Total} 张图片 · 跳过 {e.Skipped} 项";
-            if (State != "cancelling") State = "running";
+            task.Apply(e); Mirror(task); NotifyTasks();
         }
-        if (e.Type == "file")
-        {
-            CurrentFile = e.Path;
-            if (e.State == "failed")
-            {
-                var error = $"{e.Path}\n{e.Message}";
-                if (!Failures.Contains(error)) Failures.Add(error);
-            }
-        }
-        if (e.Type == "finished")
-        {
-            State = e.State == "empty" ? "emptyResult" : e.State;
-            Total = e.Total; Completed = e.Completed;
-            if (!string.IsNullOrEmpty(e.Output)) OutputPath = e.Output;
-            ResultSummary = Display.Summary(e); Message = e.Message;
-            if (State != "unknown")
-            {
-                terminalConfirmed = true;
-                OpenOutputPath = activeRequest.Engine == "pc" ? e.Output : e.OpenOutput;
-                try { if (File.Exists(PendingPath)) File.Delete(PendingPath); }
-                catch (Exception ex) { Message += $"\n无法清理任务记录：{ex.Message}"; }
-            }
-        }
-        if (e.Type == "error") Message = e.Message;
-        NotifyDerived();
     }
 }
