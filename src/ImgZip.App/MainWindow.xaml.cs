@@ -22,6 +22,9 @@ public sealed partial class MainWindow : Window
     private bool synchronizingEngine;
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+    private const int DwmwaCaptionColor = 35;   // Windows 11 22000+
+    private const int DwmwaTextColor = 36;
     public MainWindow(IWorkerClient worker, ConfigStore store, string[] initialPaths)
     {
         this.store = store;
@@ -81,6 +84,17 @@ public sealed partial class MainWindow : Window
         AppWindow.TitleBar.ButtonHoverForegroundColor = foreground;
         AppWindow.TitleBar.ButtonPressedBackgroundColor = pressedBackground;
         AppWindow.TitleBar.ButtonPressedForegroundColor = foreground;
+        // 标准标题栏不接受上面的 BackgroundColor；用 DWM 属性直接给系统绘制的标题栏着色。
+        // COLORREF 为 0x00BBGGRR，这里三通道同值故与 RGB 等价。
+        try
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            var caption = dark ? 0x001F1F1F : 0x00F3F3F3;
+            var captionText = dark ? 0x00FFFFFF : 0x001F1F1F;
+            _ = DwmSetWindowAttribute(hwnd, DwmwaCaptionColor, ref caption, sizeof(int));
+            _ = DwmSetWindowAttribute(hwnd, DwmwaTextColor, ref captionText, sizeof(int));
+        }
+        catch { }
     }
     private sealed record WindowState(int X, int Y, int W, int H);
     private string WindowStatePath => Path.Combine(store.DirectoryPath, "window-state.json");

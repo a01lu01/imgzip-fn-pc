@@ -44,6 +44,8 @@
 
 **已实现（0.3.1）**：`ApplyCaptionTheme()` 现在同时设置标题栏 `BackgroundColor / InactiveBackgroundColor / ForegroundColor / InactiveForegroundColor`（深色 `#1F1F1F` + 白前景、浅色 `#F3F3F3` + `#1F1F1F` 前景），按钮保持透明底，原有的悬停/按下配色不变。需目视确认两种反向主题组合下的观感。
 
+**0.3.1 后仍未修好（0.3.2 修正）**：用户实测深色下——未悬停且聚焦时仍是白底白字（按钮不可见）、悬停正常（深灰底白符号）、未聚焦时浅底淡灰符号。说明**标准标题栏并不接受 `AppWindow.TitleBar.BackgroundColor / InactiveBackgroundColor`**（这组属性只在 `ExtendsContentIntoTitleBar = true` 的自绘标题栏下生效），背景仍由系统按系统主题绘制，而按钮前景却按应用主题取白色，于是出现白底白字；只有按钮类的悬停/按下属性生效。**0.3.2 修复**：改用 DWM 的 `DWMWA_CAPTION_COLOR(35)` / `DWMWA_TEXT_COLOR(36)` 直接给系统绘制的标题栏着色（深色 `#1F1F1F` + 白文字，浅色 `#F3F3F3` + 深文字），随主题切换重新应用；仍保留原按钮配色。需用户复核深色/浅色、聚焦/未聚焦、悬停三态。
+
 ## 8. 非 100% 缩放下默认窗口偏小（DPI 计算时机错误）
 
 **状态**：已修复（0.3.1）
