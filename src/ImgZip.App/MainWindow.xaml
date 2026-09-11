@@ -3,8 +3,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:core="using:ImgZip.Core">
   <Grid x:Name="Root" Background="{ThemeResource WindowBrush}" Loaded="Root_Loaded">
-    <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+    <Border x:Name="AppTitleBar" Grid.Row="0" Height="32" Background="{ThemeResource WindowBrush}" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,0,0,1">
+      <StackPanel Orientation="Horizontal" Spacing="8" Margin="12,0,0,0" VerticalAlignment="Center">
+        <FontIcon Glyph="&#xE91B;" FontSize="13" Foreground="{ThemeResource TextBrush}" />
+        <TextBlock Text="ImgZip · 图片压缩" FontSize="12" Foreground="{ThemeResource TextBrush}" VerticalAlignment="Center" />
+      </StackPanel>
+    </Border>
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Margin="26,18,26,18" Spacing="12">
         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
           <StackPanel Spacing="4"><TextBlock Text="图片压缩" FontSize="24" FontWeight="SemiBold" /><TextBlock Text="保留珍贵瞬间，腾出更多空间。" Style="{StaticResource SecondaryText}" /></StackPanel>
@@ -63,7 +69,7 @@
         <Grid ColumnSpacing="10" Margin="2,0"><Grid.ColumnDefinitions><ColumnDefinition Width="20" /><ColumnDefinition Width="*" /><ColumnDefinition Width="20" /></Grid.ColumnDefinitions><FontIcon Glyph="&#xE8B7;" FontSize="16" Foreground="{ThemeResource SubtextBrush}" /><StackPanel Grid.Column="1" Spacing="2"><TextBlock Text="输出到新文件夹" FontSize="12" /><TextBlock Text="{Binding OutputPath}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding OutputPath}" /></StackPanel><FontIcon Grid.Column="2" Glyph="&#xEA18;" FontSize="16" Foreground="{ThemeResource SuccessBrush}" /></Grid>
       </StackPanel>
     </ScrollViewer>
-    <Border Grid.Row="1" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,1,0,0" Background="{ThemeResource WindowBrush}" Padding="26,12">
+    <Border Grid.Row="2" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,1,0,0" Background="{ThemeResource WindowBrush}" Padding="26,12">
       <Grid RowSpacing="10">
         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
         <ScrollViewer Grid.Row="0" MaxHeight="240" VerticalScrollBarVisibility="Auto" Visibility="{Binding HasTasks, Converter={StaticResource BoolVisibility}}">

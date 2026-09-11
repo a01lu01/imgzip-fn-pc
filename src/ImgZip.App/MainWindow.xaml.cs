@@ -22,9 +22,6 @@ public sealed partial class MainWindow : Window
     private bool synchronizingEngine;
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
-    [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
-    private const int DwmwaCaptionColor = 35;   // Windows 11 22000+
-    private const int DwmwaTextColor = 36;
     public MainWindow(IWorkerClient worker, ConfigStore store, string[] initialPaths)
     {
         this.store = store;
@@ -33,7 +30,9 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         Root.DataContext = ViewModel;
         Title = "ImgZip · 图片压缩";
-        ExtendsContentIntoTitleBar = false;
+        // 系统绘制的标准标题栏在深色下不受我们控制（DWM 属性在此环境无效），改为自绘标题栏。
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
         AppWindow.Closing += Window_Closing;
         ViewModel.PropertyChanged += (_, e) =>
         {
@@ -84,15 +83,14 @@ public sealed partial class MainWindow : Window
         AppWindow.TitleBar.ButtonHoverForegroundColor = foreground;
         AppWindow.TitleBar.ButtonPressedBackgroundColor = pressedBackground;
         AppWindow.TitleBar.ButtonPressedForegroundColor = foreground;
-        // 标准标题栏不接受上面的 BackgroundColor；用 DWM 属性直接给系统绘制的标题栏着色。
-        // COLORREF 为 0x00BBGGRR，这里三通道同值故与 RGB 等价。
         try
         {
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-            var caption = dark ? 0x001F1F1F : 0x00F3F3F3;
-            var captionText = dark ? 0x00FFFFFF : 0x001F1F1F;
-            _ = DwmSetWindowAttribute(hwnd, DwmwaCaptionColor, ref caption, sizeof(int));
-            _ = DwmSetWindowAttribute(hwnd, DwmwaTextColor, ref captionText, sizeof(int));
+            // 自绘标题栏：给系统按钮预留右侧空间，并让标题栏随主题着色。
+            // 注意：不要用 AppWindow.TitleBar.Height 覆盖 XAML 高度——该值是物理像素，
+            // 在 150% 缩放下会让自绘标题栏比系统按钮区域高一截，文字看似底部对齐。
+            // XAML 固定 32dip 与系统标题栏默认高度一致，会随 DPI 自动换算。
+            AppTitleBar.Padding = new Thickness(0, 0, AppWindow.TitleBar.RightInset, 0);
+            AppTitleBar.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(barBackground);
         }
         catch { }
     }
