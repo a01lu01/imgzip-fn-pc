@@ -187,12 +187,16 @@ while ! mkdir -- "$output" 2>/dev/null; do
   output="${source_root%/}_compressed_$suffix"; suffix=$((suffix + 1))
 done
 event manifest ready
-for ((index=0; index<total; index++)); do
-  [ ! -f "$job_dir/cancel" ] || cancelled
-  file="${files[$index]}"
-  stage="$output/.imgzip-$JOB_ID-$index"
-  mkdir -- "$stage" || { terminal failed 'Cannot create staging directory'; exit 0; }
-  args=(-e --keep-dates --threads "$THREADS")
+# 并行池：caesiumclt 的 --threads 是作业级并行，单文件调用时多线程无效；
+# 这里按 THREADS 并发跑多个单文件作业，才能真正吃满多核（实测 4 核约 3.2 倍）。
+max_jobs="${THREADS:-4}"
+[[ "$max_jobs" =~ ^[0-9]+$ ]] || max_jobs=4
+[ "$max_jobs" -ge 1 ] || max_jobs=1
+
+run_one() {
+  local index="$1" file="${files[$1]}" stage="$output/.imgzip-$JOB_ID-$1" log="$job_dir/file-$1.log" result="$job_dir/result-$1"
+  local args=(-e --keep-dates --threads 1)
+  local extension size_before size_after generated relative relative_dir destination directory_ok leaf target serial rc remaining component matched
   extension=$(printf '%s' "${file##*.}" | tr '[:upper:]' '[:lower:]')
   [ "$extension" != jpg ] || extension=jpeg
   if [ "$FORMAT" != keep ] && [ "$FORMAT" != "$extension" ]; then args+=(--format "$FORMAT"); fi
@@ -202,20 +206,17 @@ for ((index=0; index<total; index++)); do
     args+=("$option" "$PIXELS"); [ "$NO_UPSCALE" != true ] || args+=(--no-upscale)
   fi
   size_before=$(stat -c%s -- "$file" 2>/dev/null || printf 0)
-  "$engine" "${args[@]}" -o "$stage" "$file" > "$job_dir/file.log" 2>&1
+  if ! mkdir -- "$stage" 2>/dev/null; then printf 'failed|%s|0|Cannot create staging directory\n' "$size_before" > "$result"; return; fi
+  "$engine" "${args[@]}" -o "$stage" "$file" > "$log" 2>&1
   rc=$?
-  [ ! -f "$job_dir/cancel" ] || cancelled
   generated=()
   while IFS= read -r -d '' item; do generated+=("$item"); done < <(find "$stage" -type f -print0)
-  completed=$((completed + 1))
   if [ "$rc" -ne 0 ] || [ "${#generated[@]}" -ne 1 ]; then
-    failed=$((failed + 1)); event file failed "$file" "caesium exit=$rc; $(tail -c 1800 "$job_dir/file.log")" "$index" 0 0
-    cleanup_stage; stage=''; continue
+    printf 'failed|%s|0|caesium exit=%s; %s\n' "$size_before" "$rc" "$(tail -c 800 "$log" | tr '\n' ' ')" > "$result"; return
   fi
   relative="${planned[$index]}"; relative_dir=$(dirname -- "$relative")
   destination="$output"; directory_ok=true
   if [ "$relative_dir" != . ]; then
-    # Reuse case-equivalent folders so SMB never exposes ambiguous A/a results.
     remaining="$relative_dir"
     while [ -n "$remaining" ]; do
       component="${remaining%%/*}"
@@ -225,18 +226,43 @@ for ((index=0; index<total; index++)); do
       if ! mkdir -p -- "$destination"; then directory_ok=false; break; fi
     done
   fi
-  if [ "$directory_ok" != true ]; then
-    failed=$((failed + 1)); event file failed "$file" 'Cannot create target subdirectory' "$index" 0 0; cleanup_stage; stage=''; continue
-  fi
+  if [ "$directory_ok" != true ]; then printf 'failed|%s|0|Cannot create target subdirectory\n' "$size_before" > "$result"; return; fi
   leaf=$(basename -- "$relative"); target="$destination/$leaf"; serial=2
   while case_match "$target" >/dev/null; do target="$destination/${leaf%.*}_$serial.${leaf##*.}"; serial=$((serial + 1)); done
   size_after=$(stat -c%s -- "${generated[0]}" 2>/dev/null || printf 0)
   # Hard-link promotion is atomic and refuses an existing destination (same filesystem).
-  if ln -- "${generated[0]}" "$target"; then
-    succeeded=$((succeeded + 1)); before=$((before + size_before)); after=$((after + size_after))
-    event file succeeded "$file" '' "$index" "$size_before" "$size_after"
-  else failed=$((failed + 1)); event file failed "$file" 'Cannot safely publish output' "$index" 0 0; fi
-  cleanup_stage; stage=''
+  if ln -- "${generated[0]}" "$target"; then printf 'succeeded|%s|%s|\n' "$size_before" "$size_after" > "$result"
+  else printf 'failed|0|0|Cannot safely publish output\n' > "$result"; fi
+}
+
+declare -A job_of_pid=()
+running=0; next=0
+while [ "$next" -lt "$total" ] || [ "$running" -gt 0 ]; do
+  [ ! -f "$job_dir/cancel" ] || cancelled
+  while [ "$running" -lt "$max_jobs" ] && [ "$next" -lt "$total" ]; do
+    run_one "$next" &
+    job_of_pid[$!]="$next"
+    running=$((running + 1)); next=$((next + 1))
+  done
+  sleep 0.05
+  for pid in "${!job_of_pid[@]}"; do
+    kill -0 "$pid" 2>/dev/null && continue
+    index="${job_of_pid[$pid]}"; unset 'job_of_pid[$pid]'
+    running=$((running - 1))
+    result="$job_dir/result-$index"
+    state='failed'; size_before=0; size_after=0; message='Task did not produce a result'
+    if [ -f "$result" ]; then IFS='|' read -r state size_before size_after message < "$result"; fi
+    file="${files[$index]}"
+    if [ "$state" = succeeded ]; then
+      succeeded=$((succeeded + 1)); before=$((before + size_before)); after=$((after + size_after)); message=''
+    else
+      failed=$((failed + 1)); size_after=0
+    fi
+    completed=$((completed + 1))
+    event file "$state" "$file" "$message" "$index" "$size_before" "$size_after"
+    stage="$output/.imgzip-$JOB_ID-$index"; cleanup_stage; stage=''
+    rm -f -- "$result"
+  done
 done
 if [ "$failed" -eq 0 ]; then terminal succeeded
 elif [ "$succeeded" -gt 0 ]; then terminal partial
