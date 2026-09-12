@@ -96,7 +96,8 @@ function Decode-RemoteEvent {
 function Invoke-Remote {
     param([string]$Mode, [hashtable]$Variables = @{}, [switch]$Stream)
     $sshPath = if ($request.sshPath) { [string]$request.sshPath } else { 'ssh' }
-    $process = Start-Child $sshPath (Get-SshArgs) (Remote-Script $Mode $Variables) -HasInput
+    try { $process = Start-Child $sshPath (Get-SshArgs) (Remote-Script $Mode $Variables) -HasInput }
+    catch { throw "NAS 不可达（设备可能离线或资源耗尽）：$($_.Exception.Message)" }
     $errorTask = $process.StandardError.ReadToEndAsync()
     $collected = New-Object 'System.Collections.Generic.List[object]'
     $sawTerminal = $false
@@ -110,7 +111,15 @@ function Invoke-Remote {
         }
         $process.WaitForExit()
         $diagnostic = $errorTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw "SSH failed (exit=$($process.ExitCode)): $diagnostic" }
+        if ($process.ExitCode -ne 0) {
+            if ($diagnostic -match '(?i)(permission denied|authentication failed|no supported authentication methods|too many authentication failures)') {
+                throw "NAS 认证失败：请检查 SSH 用户与私钥。原始错误：$diagnostic"
+            }
+            if ($diagnostic -match '(?i)(connection timed out|timed out|banner exchange|no route to host|connection refused|network is unreachable|host is down)') {
+                throw "NAS 不可达（设备可能离线或资源耗尽）：$diagnostic"
+            }
+            throw "SSH failed (exit=$($process.ExitCode)): $diagnostic"
+        }
         if ($Stream -and -not $sawTerminal) { throw 'SSH ended without a confirmed terminal event.' }
         if (-not $Stream) { return ,$collected.ToArray() }
     } finally { $process.Dispose() }

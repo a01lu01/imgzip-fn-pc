@@ -4,7 +4,7 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 
 底层压缩内核为 [caesium-clt](https://github.com/Lymphatus/caesium-clt)（libcaesium，支持 JPEG/PNG/WebP/GIF）。界面为 WinUI 3 + C#（.NET 10），随安装包自带 PC 引擎与运行依赖。
 
-当前源码版本 **0.3.4**：修复任务调度、排队取消、恢复与结果通知，保留 0.3.3 界面和双引擎性能优化。非视觉测试 31 组通过；本版本的 Windows 打包、真实 PC/NAS 与视觉交互仍待验收。详见 [修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)。
+当前源码版本 **0.3.5**：修复 NAS 任务误用 PC 核数导致并发进程风暴的问题，并加入 NAS 核数、内存与硬上限保护。非视觉测试 34 组和 NAS worker 并发测试 4 组通过；真实 NAS 的 OOM 证据与稳定性验收仍待设备恢复后执行。详见 [0.3.5 修复记录](docs/UI-ISSUES-0.3.5-nas-concurrency.md)。
 
 ## 功能
 
@@ -15,7 +15,7 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 - 输出到 `<源目录>_compressed`（已存在则 `_compressed_2`…），不覆盖原图或旧结果
 - 单实例运行；准备阶段不显示虚构百分比，进度来自真实完成事件
 - 多任务并行：PC 任务按 CPU 核数并发（设置可调 1–64），NAS 任务串行但可与 PC 并行；任务列表逐条显示进度并可取消/重查
-- 引擎并行：PC 侧组批调用消除逐文件进程开销；NAS 侧按核心数并发，多核机器可显著提速
+- 引擎并行：PC 侧组批调用消除逐文件进程开销；NAS 侧并发独立设置（默认 2），永远不超过 NAS 核数与 4 的硬上限
 - 支持取消、失败详情、任务状态未确认时的重新检查
 
 ## 安装
@@ -53,7 +53,7 @@ pwsh -NoProfile -File build/windows.ps1 -BootstrapCompiler -SkipTests
 - `keyPath`：本机私钥路径，应用只保存路径，不复制私钥
 - `nasHosts` / `nasIp`：用于识别共享是否属于本 NAS，从而决定是否提供 NAS 引擎
 
-配置保存在 `%LOCALAPPDATA%\ImgZip\local-config.json`，可在设置中“测试连接”验证后再保存；需要口令的私钥请先用 SSH agent 解锁。
+配置保存在 `%LOCALAPPDATA%\ImgZip\local-config.json`，可在设置中“测试连接”验证后再保存；需要口令的私钥请先用 SSH agent 解锁。NAS 并发作业数可在设置中调整为 1–4，实际值会按探测到的 NAS 核数再次夹取。
 
 ## 使用
 
@@ -86,5 +86,6 @@ NAS 侧需要 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk
 - [协议说明](docs/PROTOCOL.md)
 - [检查与验收](docs/VALIDATION.md)
 - [界面设计](docs/DESIGN-A.md)
+- [0.3.5 NAS 并发事故与修复](docs/UI-ISSUES-0.3.5-nas-concurrency.md)
 - [0.3.4 修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)
 - 界面方案演示（HTML，本地打开）：[design-demo](design-demo/README.md)

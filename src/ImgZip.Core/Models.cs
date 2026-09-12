@@ -25,12 +25,15 @@ public sealed record AppConfig
     public string Theme { get; init; } = "system";
     /// <summary>PC 并行任务数；0 = 自动（等于 CPU 核数）。</summary>
     public int PcConcurrency { get; init; }
+    /// <summary>单个 NAS 任务内部的引擎并发作业数；默认 2，最多 4。</summary>
+    public int NasConcurrency { get; init; } = 2;
     public AppConfig Normalize() => this with
     {
         Server = (Server ?? "").Trim(), User = (User ?? "").Trim(), NasIp = (NasIp ?? "").Trim(),
         KeyPath = (KeyPath ?? "").Trim(), NasHosts = NasHosts ?? [],
         Theme = Theme is "light" or "dark" ? Theme : "system",
-        PcConcurrency = PcConcurrency is 0 or (> 0 and <= 64) ? PcConcurrency : 0
+        PcConcurrency = PcConcurrency is 0 or (> 0 and <= 64) ? PcConcurrency : 0,
+        NasConcurrency = NasConcurrency is >= 1 and <= 4 ? NasConcurrency : 2
     };
     public string? ValidateConnection()
     {
@@ -110,6 +113,8 @@ public sealed record WorkerEvent
     public bool PcAvailable { get; init; }
     public bool NasAvailable { get; init; }
     public bool Connected { get; init; }
+    public int NasCores { get; init; }
+    public long NasMemoryMb { get; init; }
     public bool DryRun { get; init; }
     public static WorkerEvent Parse(string json, string jobId)
     {

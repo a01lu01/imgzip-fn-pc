@@ -43,6 +43,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool recurse;
     [ObservableProperty] private bool dryRun;
     [ObservableProperty] private bool pcAvailable;
+    [ObservableProperty] private int nasCores;
+    [ObservableProperty] private long nasMemoryMb;
     [ObservableProperty] private bool advancedExpanded;
     [ObservableProperty] private bool checking;
     [ObservableProperty] private int total;
@@ -85,6 +87,23 @@ public partial class MainViewModel : ObservableObject
     public string ProgressText => $"{Completed} / {Total}";
     public string StartText => DryRun ? "开始预演" : "开始压缩";
     public int EffectivePcConcurrency => Config.PcConcurrency is > 0 and <= 64 ? Config.PcConcurrency : Math.Max(1, Environment.ProcessorCount);
+    public int EffectiveNasConcurrency
+    {
+        get
+        {
+            var hardwareLimit = NasCores > 0 ? Math.Min(NasCores, 4) : 4;
+            return Math.Clamp(Config.NasConcurrency, 1, hardwareLimit);
+        }
+    }
+    public string NasConcurrencyText
+    {
+        get
+        {
+            var hardware = NasCores > 0 ? Math.Min(NasCores, 4) : 4;
+            var detected = NasCores > 0 ? $"NAS {NasCores} 核" : "NAS 核数待探测";
+            return $"NAS 并发 {EffectiveNasConcurrency}（上限 {hardware}，{detected}）";
+        }
+    }
     public string TaskSummary
     {
         get
@@ -118,11 +137,11 @@ public partial class MainViewModel : ObservableObject
         {
             if (Preset != "custom") Preset = "custom";
         }
-        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(DryRun) or nameof(Lossless) or nameof(ResizeIndex) or nameof(EngineIndex) or nameof(Config) or nameof(PcAvailable) or nameof(Checking) or nameof(Message) or nameof(Preset) or nameof(Quality) or nameof(Pixels) or nameof(NoUpscale)) NotifyDerived();
+        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(DryRun) or nameof(Lossless) or nameof(ResizeIndex) or nameof(EngineIndex) or nameof(Config) or nameof(PcAvailable) or nameof(NasCores) or nameof(NasMemoryMb) or nameof(Checking) or nameof(Message) or nameof(Preset) or nameof(Quality) or nameof(Pixels) or nameof(NoUpscale)) NotifyDerived();
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
     private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks)); }
 
@@ -183,7 +202,17 @@ public partial class MainViewModel : ObservableObject
                 PcAvailable = result?.PcAvailable == true;
                 EngineStatus = PcAvailable ? "本机引擎就绪" : "本机引擎缺失，请重新安装应用";
             }
-            else EngineStatus = result?.NasAvailable == true ? "NAS 引擎就绪" : result?.Connected == true ? "SSH 已连接；NAS 引擎或必要工具缺失，请查看设置说明" : "NAS 未连接，请检查设置";
+            else
+            {
+                NasCores = result?.NasCores > 0 ? result.NasCores : 0;
+                NasMemoryMb = result?.NasMemoryMb > 0 ? result.NasMemoryMb : 0;
+                var memory = NasMemoryMb > 0 ? $" · 可用内存 {Display.Bytes(NasMemoryMb * 1024 * 1024)}" : "";
+                EngineStatus = result?.NasAvailable == true
+                    ? $"NAS 引擎就绪 · {NasConcurrencyText}{memory}"
+                    : result?.Connected == true
+                        ? "SSH 已连接；NAS 引擎或必要工具缺失，请查看设置说明"
+                        : string.IsNullOrWhiteSpace(result?.Message) ? "NAS 未连接，请检查设置" : result.Message;
+            }
         }
         catch (Exception ex) { if (generation == probeGeneration) EngineStatus = ex.Message; }
     }

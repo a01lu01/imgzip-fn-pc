@@ -15,6 +15,15 @@ var scratch = Path.Combine(root, "artifacts", "tests", Guid.NewGuid().ToString("
 Directory.CreateDirectory(scratch);
 var checks = 0;
 void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+async Task WaitUntilAsync(Func<bool> condition, string message, int timeoutMs = 10000)
+{
+    var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+    while (!condition())
+    {
+        if (DateTime.UtcNow >= deadline) throw new TimeoutException(message);
+        await Task.Delay(20);
+    }
+}
 async Task Test(string name, Func<Task> test)
 {
     await test(); checks++; Console.WriteLine($"PASS {name}");
@@ -25,10 +34,12 @@ await Test("config import, defaults, atomic save and theme persistence", async (
     var original = """{"server":"192.168.1.10","user":"nas","keyPath":"C:\\密钥\\id_nas","nasHosts":["NAS"]}""";
     await File.WriteAllTextAsync(legacy, original);
     var imported = await ConfigStore.ImportAsync(legacy);
-    Check(imported.Port == 22 && imported.Theme == "system", "Legacy defaults changed");
+    Check(imported.Port == 22 && imported.Theme == "system" && imported.NasConcurrency == 2, "Legacy defaults changed");
+    Check(new AppConfig { NasConcurrency = 0 }.Normalize().NasConcurrency == 2 && new AppConfig { NasConcurrency = 9 }.Normalize().NasConcurrency == 2, "NAS concurrency normalization failed");
     var store = new ConfigStore(Path.Combine(scratch, "config"));
-    await store.SaveAsync(imported with { Theme = "dark" });
-    Check((await store.LoadAsync()).Theme == "dark", "Theme not persisted");
+    await store.SaveAsync(imported with { Theme = "dark", NasConcurrency = 3 });
+    var persisted = await store.LoadAsync();
+    Check(persisted.Theme == "dark" && persisted.NasConcurrency == 3, "Theme or NAS concurrency not persisted");
     Check(await File.ReadAllTextAsync(legacy) == original, "Import modified the original");
     Check(!Directory.EnumerateFiles(store.DirectoryPath, "*.tmp").Any(), "Temporary configuration leaked");
     Check(Wire.Decode<AppConfig>("""{"theme":"invalid"}""").Normalize().Theme == "system", "Invalid theme not normalized");
@@ -98,7 +109,8 @@ await Test("PC concurrency respects configured limit and queues the rest", async
         await vm.SetSourcesAsync([source]);
         runs.Add(vm.StartAsync());
     }
-    await Task.Delay(600);
+    await WaitUntilAsync(() => mock.MaxActiveRuns == 2 && vm.Tasks.Count(t => t.IsQueued) == 1,
+        $"PC concurrency limit not reached: active={mock.ActiveRuns}, max={mock.MaxActiveRuns}");
     Check(mock.MaxActiveRuns == 2, $"PC concurrency limit not respected: {mock.MaxActiveRuns}");
     Check(vm.Tasks.Count(t => t.IsQueued) == 1, "Excess PC task should stay queued");
     mock.ReleaseRuns();
@@ -119,12 +131,55 @@ await Test("NAS tasks serialize; PC tasks may run alongside", async () =>
     var runs = vm.Tasks.ToArray().Select(vm.ResumeTaskAsync).ToList();
     await vm.SetSourcesAsync([Path.Combine(scratch, "alongside.jpg")]);
     runs.Add(vm.StartAsync());
-    await Task.Delay(600);
+    await WaitUntilAsync(() => mock.MaxActiveNas == 1 && mock.ActiveRuns == 2,
+        $"PC/NAS concurrency not reached: maxNas={mock.MaxActiveNas}, active={mock.ActiveRuns}, requests={mock.RunRequests.Count}");
     Check(mock.MaxActiveNas == 1 && mock.RunRequests.Count(r => r.Engine == "nas") == 1, "NAS test must start exactly one task before release");
     Check(mock.ActiveRuns == 2, "PC should run alongside NAS");
     mock.ReleaseRuns();
     await Task.WhenAll(runs).WaitAsync(TimeSpan.FromSeconds(10));
     Check(mock.RunRequests.Count(r => r.Engine == "nas") == 2, "Both NAS requests must actually execute");
+});
+
+await Test("NAS engine concurrency comes from NAS setting and detected core cap", async () =>
+{
+    var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded", NasCores = 2, NasMemoryMb = 2048 };
+    var store = new ConfigStore(Path.Combine(scratch, "nas-limit"));
+    await store.SaveAsync(new AppConfig { PcConcurrency = 3, NasConcurrency = 4, Server = "nas.local", User = "nas", KeyPath = "C:\\key", NasHosts = ["nas.local"] });
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    await vm.SetSourcesAsync([@"\\nas.local\photos\shot.jpg"]);
+    Check(vm.EffectiveNasConcurrency == 2, $"NAS setting not clamped to detected cores: {vm.EffectiveNasConcurrency}");
+    var run = vm.StartAsync();
+    await WaitUntilAsync(() => mock.RunRequests.Count == 1, "NAS task did not start");
+    Check(mock.RunRequests[0].Options.Threads == 2 && mock.RunRequests[0].Options.Threads != Environment.ProcessorCount,
+        $"NAS task inherited PC concurrency: {mock.RunRequests[0].Options.Threads}");
+    mock.ReleaseRuns();
+    await run;
+});
+
+await Test("NAS concurrency setting does not change PC task thread allocation", async () =>
+{
+    var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded" };
+    var store = new ConfigStore(Path.Combine(scratch, "pc-independent"));
+    await store.SaveAsync(new AppConfig { PcConcurrency = 2, NasConcurrency = 1 });
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    var runs = new List<Task>();
+    for (var i = 0; i < 2; i++)
+    {
+        var source = Path.Combine(scratch, $"pc-independent-{i}.jpg");
+        await File.WriteAllTextAsync(source, "image");
+        await vm.SetSourcesAsync([source]);
+        runs.Add(vm.StartAsync());
+    }
+    await WaitUntilAsync(() => mock.RunRequests.Count == 2, "Both PC tasks did not start");
+    var expectedFirst = Math.Max(1, Environment.ProcessorCount);
+    var expectedSecond = Math.Max(1, Environment.ProcessorCount / 2);
+    var threads = mock.RunRequests.Select(r => r.Options.Threads).OrderByDescending(value => value).ToArray();
+    Check(vm.EffectivePcConcurrency == 2 && threads.SequenceEqual([expectedFirst, expectedSecond]),
+        $"PC thread allocation changed with NAS setting: {string.Join(",", threads)}");
+    mock.ReleaseRuns();
+    await Task.WhenAll(runs);
 });
 
 await Test("successful task record is cleaned up and removed from the list", async () =>
@@ -243,6 +298,19 @@ await Test("NAS transport fixture: escaped paths, output mapping and connection/
     var probe = await Execute(request with { Operation = "probe", Config = request.Config with { Server = "missing" } });
     Check(probe.Last().Connected && !probe.Last().NasAvailable, "Connection and engine readiness conflated");
 });
+await Test("NAS transport fixture: auth and unreachable errors are distinguished", async () =>
+{
+    var key = Path.Combine(scratch, "private-key-reference");
+    var request = Request([@"\\NAS\photos\trip\probe.jpg"]) with
+    {
+        Engine = "nas", SshPath = engine,
+        Config = new() { Server = "NAS", User = "nas", KeyPath = key, Port = 2222, NasHosts = ["NAS"] }
+    };
+    var auth = await Execute(request with { Operation = "probe", Config = request.Config with { Server = "authfail" } });
+    Check(auth.Last().State == "failed" && auth.Last().Message.Contains("NAS 认证失败"), Wire.Encode(auth.Last()));
+    var offline = await Execute(request with { Operation = "probe", Config = request.Config with { Server = "offline" } });
+    Check(offline.Last().State == "failed" && offline.Last().Message.Contains("NAS 不可达"), Wire.Encode(offline.Last()));
+});
 await Test("NAS transport fixture: disconnect and unconfirmed cancel remain unknown; inspection recovers", async () =>
 {
     var key = Path.Combine(scratch, "private-key-reference");
@@ -288,11 +356,13 @@ sealed class FakeWorker : IWorkerClient
     public int MaxActiveRuns;
     public int ActiveNas;
     public int MaxActiveNas;
+    public int NasCores { get; set; } = 4;
+    public long NasMemoryMb { get; set; } = 4096;
     private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public void ReleaseRuns() => release.TrySetResult();
     public async Task ExecuteAsync(WorkerRequest request, Action<WorkerEvent> onEvent)
     {
-        if (request.Operation == "probe") { onEvent(new() { JobId = request.JobId, Type = "probe", PcAvailable = true, NasAvailable = true, Connected = true }); return; }
+        if (request.Operation == "probe") { onEvent(new() { JobId = request.JobId, Type = "probe", PcAvailable = true, NasAvailable = true, Connected = true, NasCores = NasCores, NasMemoryMb = NasMemoryMb }); return; }
         JobId = request.JobId;
         if (request.Operation == "cancel") { onEvent(new() { JobId = request.JobId, Type = "finished", State = "cancelled" }); return; }
         if (request.Operation == "inspect") { onEvent(new() { JobId = request.JobId, Type = "finished", State = "succeeded" }); return; }

@@ -18,16 +18,19 @@ public sealed partial class SettingsDialog : ContentDialog
         ServerField.Text = config.Server; UserField.Text = config.User; KeyField.Text = config.KeyPath;
         PortField.Value = config.Port; HostsField.Text = string.Join(", ", config.NasHosts); IpField.Text = config.NasIp;
         ConcurrencyField.Value = config.PcConcurrency;
+        NasConcurrencyField.Value = config.NasConcurrency;
     }
     private AppConfig Read()
     {
         if (!double.IsFinite(PortField.Value) || PortField.Value != Math.Truncate(PortField.Value) || PortField.Value is < 1 or > 65535) throw new ArgumentException("SSH 端口需为 1–65535 的整数。");
         if (!double.IsFinite(ConcurrencyField.Value) || ConcurrencyField.Value != Math.Truncate(ConcurrencyField.Value) || ConcurrencyField.Value is < 0 or > 64) throw new ArgumentException("PC 并行任务数需为 0–64 的整数（0 = 自动）。");
+        if (!double.IsFinite(NasConcurrencyField.Value) || NasConcurrencyField.Value != Math.Truncate(NasConcurrencyField.Value) || NasConcurrencyField.Value is < 1 or > 4) throw new ArgumentException("NAS 并发作业数需为 1–4 的整数。");
         return new AppConfig
         {
             Server = ServerField.Text, User = UserField.Text, Port = (int)PortField.Value, KeyPath = KeyField.Text,
             NasIp = IpField.Text, NasHosts = HostsField.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), Theme = model.Config.Theme,
-            PcConcurrency = (int)ConcurrencyField.Value
+            PcConcurrency = (int)ConcurrencyField.Value,
+            NasConcurrency = (int)NasConcurrencyField.Value
         }.Normalize();
     }
     private void Info(string message, InfoBarSeverity severity)
@@ -45,8 +48,13 @@ public sealed partial class SettingsDialog : ContentDialog
         try
         {
             Info("正在连接…", InfoBarSeverity.Informational);
-            var result = await model.TestConnectionAsync(Read());
-            Info(result.NasAvailable ? "SSH 连接正常，NAS 引擎就绪。当前输入尚未保存。" : result.Connected ? "SSH 已连接，但 NAS 引擎或必要工具缺失。" : "连接失败：" + result.Message, result.NasAvailable ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+            var draft = Read();
+            var result = await model.TestConnectionAsync(draft);
+            var effective = Math.Clamp(draft.NasConcurrency, 1, Math.Min(result.NasCores > 0 ? result.NasCores : 4, 4));
+            var detail = result.NasAvailable
+                ? $"SSH 连接正常，NAS 引擎就绪 · NAS {result.NasCores} 核 · 实际并发 {effective}。当前输入尚未保存。"
+                : result.Connected ? "SSH 已连接，但 NAS 引擎或必要工具缺失。" : "连接失败：" + result.Message;
+            Info(detail, result.NasAvailable ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
         }
         catch (Exception ex) { Info(ex.Message, InfoBarSeverity.Error); }
         finally { TestButton.IsEnabled = true; }

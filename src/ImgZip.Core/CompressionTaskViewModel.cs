@@ -17,6 +17,9 @@ public partial class CompressionTaskViewModel : ObservableObject
             : Path.GetFileName(request.Sources[0].TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         if (string.IsNullOrWhiteSpace(SourceTitle)) SourceTitle = string.Join("; ", request.Sources);
         CreatedAt = createdAt ?? DateTimeOffset.Now;
+        ConcurrencyText = engineIndex == 1
+            ? $"NAS 并发 {Math.Min(Math.Max(request.Options.Threads, 1), 4)}（硬上限 4）"
+            : $"PC 任务并发 {request.Options.Threads}";
         Failures.CollectionChanged += (_, _) => OnPropertyChanged(nameof(HasFailures));
     }
     public WorkerRequest Request { get; internal set; }
@@ -46,6 +49,7 @@ public partial class CompressionTaskViewModel : ObservableObject
     [ObservableProperty] private string openOutputPath = "";
     [ObservableProperty] private string resultSummary = "排队等待执行";
     [ObservableProperty] private bool checking;
+    [ObservableProperty] private string concurrencyText = "";
 
     public bool IsQueued => State == "queued";
     public bool CanResume => State == "awaitingResume";
@@ -81,7 +85,16 @@ public partial class CompressionTaskViewModel : ObservableObject
     public void Apply(WorkerEvent e)
     {
         if (e.JobId != JobId || TerminalConfirmed) return;
-        if (e.Type == "phase" && State != "cancelling") State = "preparing";
+        if (e.Type == "phase")
+        {
+            if (State is "queued" or "awaitingResume" or "preparing") State = "preparing";
+            if (!string.IsNullOrWhiteSpace(e.Message))
+            {
+                Message = e.Message;
+                if (e.Message.Contains("NAS 并发", StringComparison.Ordinal) || e.Message.Contains("NAS 可用内存", StringComparison.Ordinal))
+                    resourceNote = e.Message;
+            }
+        }
         if (e.Type is "manifest" or "file")
         {
             Total = e.Total; Completed = e.Completed;
@@ -104,9 +117,11 @@ public partial class CompressionTaskViewModel : ObservableObject
             if (!string.IsNullOrEmpty(e.Output)) OutputPath = e.Output;
             OpenOutputPath = Request.Engine == "pc" ? e.Output : e.OpenOutput;
             ResultSummary = Display.Summary(e);
-            Message = e.Message;
+            Message = string.IsNullOrWhiteSpace(resourceNote) ? e.Message : $"{e.Message}\n{resourceNote}".Trim();
             if (State != "unknown") { TerminalConfirmed = true; FinalResult = e; }
         }
         if (e.Type == "error") Message = e.Message;
     }
+
+    private string resourceNote = "";
 }

@@ -23,8 +23,8 @@ function Download-Verified($Dependency, [string]$Destination) {
     }
     if ((Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Dependency.sha256) { throw "Checksum mismatch: $Destination" }
 }
-function Dotnet([string[]]$Arguments) {
-    # 注意: 函数名 Dotnet 与命令 dotnet 大小写不敏感, 必须用 dotnet.exe 强制走外部程序
+function Invoke-Dotnet([string[]]$Arguments) {
+    # 不要使用 Dotnet 作为函数名，否则会遮蔽测试脚本中调用的外部 dotnet 命令。
     & dotnet.exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw ('dotnet failed: ' + ($Arguments -join ' ')) }
 }
@@ -32,8 +32,8 @@ Push-Location $root
 try {
     if (-not $SkipTests) { & (Join-Path $PSScriptRoot 'test.ps1') }
     # The app pins win-x64 itself; a global -r would change the core library lock graph.
-    Dotnet -Arguments @('restore','src/ImgZip.App/ImgZip.App.csproj','--locked-mode')
-    Dotnet -Arguments @('publish','src/ImgZip.App/ImgZip.App.csproj','-c','Release','--no-restore','-o',$publish)
+    Invoke-Dotnet -Arguments @('restore','src/ImgZip.App/ImgZip.App.csproj','--locked-mode')
+    Invoke-Dotnet -Arguments @('publish','src/ImgZip.App/ImgZip.App.csproj','-c','Release','--no-restore','-o',$publish)
     $archive = Join-Path $tools ('caesium-' + $deps.caesiumWindows.version + '-windows.zip')
     Download-Verified $deps.caesiumWindows $archive
     $extracted = Join-Path $buildRoot 'caesium'

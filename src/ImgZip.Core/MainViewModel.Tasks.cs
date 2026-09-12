@@ -134,8 +134,16 @@ public partial class MainViewModel
                 if (occupied >= limit || olderQueued) return;
                 task.OwnsSlot = true;
                 var cores = Math.Clamp(Environment.ProcessorCount, 1, 64);
-                var active = taskIndex.Values.Count(t => t.OwnsSlot);
-                task.Request = task.Request with { Options = task.Request.Options with { Threads = Math.Max(1, cores / Math.Min(active, cores)) } };
+                var activePc = taskIndex.Values.Count(t => t.OwnsSlot && t.EngineIndex == 0);
+                var threads = task.EngineIndex == 1
+                    ? EffectiveNasConcurrency
+                    : Math.Max(1, cores / Math.Min(Math.Max(activePc, 1), EffectivePcConcurrency));
+                task.Request = task.Request with { Options = task.Request.Options with { Threads = threads } };
+                var hardware = Math.Min(NasCores > 0 ? NasCores : 4, 4);
+                var detected = NasCores > 0 ? $"NAS {NasCores} 核" : "NAS 核数待探测";
+                task.ConcurrencyText = task.EngineIndex == 1
+                    ? $"NAS 并发 {threads}（上限 {hardware}，{detected}）"
+                    : $"PC 任务并发 {threads}";
                 task.State = "preparing";
                 try
                 {

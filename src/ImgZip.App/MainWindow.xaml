@@ -88,6 +88,7 @@
                       <ProgressBar Maximum="100" Value="{Binding Progress}" IsIndeterminate="{Binding IsIndeterminate}" Visibility="{Binding IsRunning, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
                       <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" />
                       <TextBlock Text="{Binding CurrentFile}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding ConcurrencyText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
                       <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
                       <TextBlock Text="{Binding Message}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasMessage, Converter={StaticResource BoolVisibility}}" />
                     </StackPanel>

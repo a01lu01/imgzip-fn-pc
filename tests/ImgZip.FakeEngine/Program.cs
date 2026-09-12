@@ -12,7 +12,13 @@ if (args.Contains("bash") && args.Contains("-s"))
     var mode = variables["MODE"]; var id = variables["JOB_ID"];
     string Encode(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
     void Emit(object value) => Console.WriteLine(JsonSerializer.Serialize(value));
-    if (mode == "probe") { Emit(new { version = 1, jobId = id, type = "probe", connected = true, nasAvailable = !args.Any(a => a.EndsWith("@missing")) }); return 0; }
+    if (mode == "probe")
+    {
+        if (args.Any(a => a.EndsWith("@authfail"))) { Console.Error.WriteLine("Permission denied (publickey)."); return 255; }
+        if (args.Any(a => a.EndsWith("@offline"))) { Console.Error.WriteLine("ssh: connect to host nas port 22: Connection timed out"); return 255; }
+        Emit(new { version = 1, jobId = id, type = "probe", connected = true, nasAvailable = !args.Any(a => a.EndsWith("@missing")) });
+        return 0;
+    }
     if (mode == "resolve") { Emit(new { version = 1, jobId = id, type = "resolved", path64 = Encode("/vol1/photo") }); return 0; }
     var remoteOutput = "/vol1/photo/trip_compressed";
     if (mode == "cancel") { Emit(new { version = 1, jobId = id, type = "finished", state = "unknown", message64 = Encode("Remote termination not confirmed") }); return 0; }

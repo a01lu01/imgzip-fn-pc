@@ -61,7 +61,11 @@ case "$MODE" in
     [ -x "$engine" ] || ok=false
     [ "${BASH_VERSINFO[0]}" -ge 4 ] || ok=false
     "$engine" --version >/dev/null 2>&1 || ok=false
-    printf '{"version":1,"jobId":"%s","type":"probe","connected":true,"nasAvailable":%s,"message64":"%s"}\n' "$JOB_ID" "$ok" "$(encode 'SSH connected; engine and required utilities checked')"
+    probe_cores=$(nproc 2>/dev/null || printf 1)
+    [[ "$probe_cores" =~ ^[0-9]+$ ]] || probe_cores=1
+    probe_mem_mb=$(awk '/^MemAvailable/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || printf 0)
+    [[ "$probe_mem_mb" =~ ^[0-9]+$ ]] || probe_mem_mb=0
+    printf '{"version":1,"jobId":"%s","type":"probe","connected":true,"nasAvailable":%s,"nasCores":%s,"nasMemoryMb":%s,"message64":"%s"}\n' "$JOB_ID" "$ok" "$probe_cores" "$probe_mem_mb" "$(encode 'SSH connected; engine and required utilities checked')"
     exit 0;;
   resolve)
     share=$(decode "$SHARE_B64")
@@ -187,11 +191,49 @@ while ! mkdir -- "$output" 2>/dev/null; do
   output="${source_root%/}_compressed_$suffix"; suffix=$((suffix + 1))
 done
 event manifest ready
-# 并行池：caesiumclt 的 --threads 是作业级并行，单文件调用时多线程无效；
-# 这里按 THREADS 并发跑多个单文件作业，才能真正吃满多核（实测 4 核约 3.2 倍）。
-max_jobs="${THREADS:-4}"
-[[ "$max_jobs" =~ ^[0-9]+$ ]] || max_jobs=4
+# 并行池：caesiumclt 的 --threads 是作业级并行，单文件调用时多线程无效，
+# 这里并发跑多个单文件作业以吃满多核（4 核实测约 3.2 倍）。
+# 安全上限：客户端请求值、NAS 实际核数、硬上限三者取最小——客户端传什么都不得突破。
+# （0.3.4 曾以 PC 的 32 核为请求值，单任务起了 32 个引擎进程，把 NAS 拖垮。）
+requested_jobs="${THREADS:-2}"
+[[ "$requested_jobs" =~ ^[0-9]+$ ]] || requested_jobs=2
+[ "$requested_jobs" -ge 1 ] || requested_jobs=2
+nas_cores=$(nproc 2>/dev/null || printf 1)
+[[ "$nas_cores" =~ ^[0-9]+$ ]] || nas_cores=1
+[ "$nas_cores" -ge 1 ] || nas_cores=1
+hard_job_cap=4
+max_jobs=$requested_jobs
+[ "$max_jobs" -gt "$nas_cores" ] && max_jobs=$nas_cores
+[ "$max_jobs" -gt "$hard_job_cap" ] && max_jobs=$hard_job_cap
 [ "$max_jobs" -ge 1 ] || max_jobs=1
+printf 'concurrency: requested=%s nas_cores=%s effective=%s cap=%s\n' "$requested_jobs" "$nas_cores" "$max_jobs" "$hard_job_cap" >> "$job_dir/diagnostic.log"
+if [ "$max_jobs" -ne "$requested_jobs" ]; then
+  event phase preparing '' "NAS 并发已限制为 $max_jobs（请求 $requested_jobs，NAS $nas_cores 核，硬上限 $hard_job_cap）"
+fi
+
+# 内存守卫：可用内存越低允许的并发越少；读不到内存信息时保守取 2。
+# IMGZIP_MEM_AVAILABLE_KB 仅用于平台条件测试，生产环境默认读取 /proc/meminfo。
+mem_available_kb() {
+  local avail_kb
+  if [[ "${IMGZIP_MEM_AVAILABLE_KB:-}" =~ ^[0-9]+$ ]]; then
+    avail_kb=$IMGZIP_MEM_AVAILABLE_KB
+  else
+    avail_kb=$(awk '/^MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || printf 0)
+  fi
+  [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=0
+  printf '%s' "$avail_kb"
+}
+
+mem_guard_limit() {
+  local avail_kb
+  avail_kb=$(mem_available_kb)
+  if [ "$avail_kb" -le 0 ]; then printf 2
+  elif [ "$avail_kb" -lt 1500000 ]; then printf 1
+  elif [ "$avail_kb" -lt 3000000 ]; then printf 2
+  else printf 4
+  fi
+}
+mem_warned=false
 
 run_one() {
   local index="$1" file="${files[$1]}" stage="$output/.imgzip-$JOB_ID-$1" log="$job_dir/file-$1.log" result="$job_dir/result-$1"
@@ -207,7 +249,12 @@ run_one() {
   fi
   size_before=$(stat -c%s -- "$file" 2>/dev/null || printf 0)
   if ! mkdir -- "$stage" 2>/dev/null; then printf 'failed|%s|0|Cannot create staging directory\n' "$size_before" > "$result"; return; fi
-  "$engine" "${args[@]}" -o "$stage" "$file" > "$log" 2>&1
+  # nice 让 NAS 在满载时仍能响应 SSH/SMB（不影响压缩结果）。
+  if command -v nice >/dev/null 2>&1; then
+    nice -n 10 "$engine" "${args[@]}" -o "$stage" "$file" > "$log" 2>&1
+  else
+    "$engine" "${args[@]}" -o "$stage" "$file" > "$log" 2>&1
+  fi
   rc=$?
   generated=()
   while IFS= read -r -d '' item; do generated+=("$item"); done < <(find "$stage" -type f -print0)
@@ -239,7 +286,18 @@ declare -A job_of_pid=()
 running=0; next=0
 while [ "$next" -lt "$total" ] || [ "$running" -gt 0 ]; do
   [ ! -f "$job_dir/cancel" ] || cancelled
-  while [ "$running" -lt "$max_jobs" ] && [ "$next" -lt "$total" ]; do
+  while [ "$next" -lt "$total" ]; do
+    mem_cap=$(mem_guard_limit)
+    limit=$max_jobs
+    [ "$mem_cap" -lt "$limit" ] && limit=$mem_cap
+    [ "$limit" -ge 1 ] || limit=1
+    [ "$running" -lt "$limit" ] || break
+    if [ "$limit" -lt "$max_jobs" ] && [ "$mem_warned" = false ]; then
+      mem_warned=true
+      printf 'memory guard: effective=%s (max_jobs=%s)\n' "$limit" "$max_jobs" >> "$job_dir/diagnostic.log"
+      event phase preparing '' "NAS 可用内存偏低，并发已降至 $limit"
+    fi
+    printf 'dispatch: next=%s running=%s limit=%s mem_available_kb=%s\n' "$next" "$running" "$limit" "$(mem_available_kb)" >> "$job_dir/diagnostic.log"
     run_one "$next" &
     job_of_pid[$!]="$next"
     running=$((running + 1)); next=$((next + 1))

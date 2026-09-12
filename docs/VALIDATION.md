@@ -1,6 +1,14 @@
-# 0.3.4 检查记录与验收清单
+# 0.3.5 检查记录与验收清单
 
-## Mac 已执行的检查
+## 0.3.5 增量检查
+
+Windows 本机执行：C# / PowerShell 替代执行层 **34 组通过**；新增 NAS 设置夹取、NAS 不继承 PC 线程数、PC/NAS 线程预算隔离、认证失败与不可达提示区分。Git Bash 平台条件执行 NAS worker 并发检查 **4 组通过**：`THREADS=32` 被限制到 `min(nproc,4)`、`0`/`abc` 回退为 2、模拟低内存时降至 1。
+
+NAS 真机尚未重启和复测。需在设备恢复后保存 `dmesg`、`journalctl` 与 `~/.cache/imgzip/jobs/*/diagnostic.log`，再验证任务期间同时最多 2–4 个引擎进程、内存不被打满、SSH/SMB 持续可用。
+
+以下 0.3.4 Mac 检查作为历史基线保留；不能替代 0.3.5 的 Windows 安装与 NAS 稳定性验收。
+
+## 0.3.4 历史检查
 
 本次环境：macOS arm64；项目内 .NET SDK 10.0.400、PowerShell 7.6.5，不修改系统 PATH。核心与执行层控制台测试共 **31 组通过**，保留原有 15 组并新增 16 组生命周期回归；使用真实 PowerShell 入口和替代引擎，未访问 NAS，也未执行真实图像编码。0.3.3 的用户 Windows 实测记录保留在 `UI-ISSUES-0.3.0-0.3.3.md`，不代替本版本的 Windows 验收。
 
@@ -28,7 +36,7 @@ bash -n worker/nas-worker.sh
 
 `bootstrap-mac.py` 目前面向 Apple Silicon Mac；使用固定版本与摘要验证，下载到 `.tools`。测试证据留在 `artifacts/tests/<本次ID>`。需要检查窗口 C# 引用时，先运行 App restore/build 生成 XAML 的 `input.json`（Mac 的 XAML 步骤预期失败），再运行 `python3 build/check-native-csharp.py`；它不会打开或操作窗口。
 
-## Windows 集成验证（0.3.4 尚未执行）
+## Windows 集成验证（0.3.5 尚未执行）
 
 由 Windows 测试者逐项记录系统版本、构建产物摘要、预期/实际和日志。
 
@@ -48,6 +56,8 @@ bash -n worker/nas-worker.sh
 - [ ] 预演无输出目录/压缩产物；损坏图片、写入失败、权限不足、引擎缺失/异常退出保留成功产物并展示失败详情。
 - [ ] PC 取消真正停止本任务进程树；快速取消/准备阶段取消/关闭后重开能正确确认任务状态。
 - [ ] NAS 设置测试不隐式保存；旧配置导入不修改原文件；非 22 端口、公钥/SSH agent 正常。
+- [ ] NAS 并发设置为 1/2/4 时，请求值分别被夹取到 `min(设置值, NAS 核数, 4)`；PC 并发设置不影响 NAS，NAS 设置也不影响 PC。
+- [ ] 真实 NAS 任务期间 `ps` 同时最多 2–4 个引擎进程；低内存时新增并发下降并显示提示，SSH/SMB 不中断。
 - [ ] NAS 共享归属及 Samba 真实路径映射正确，包含特殊字符；SSH 连通但缺少引擎、不可达、错误密钥、共享无权限分别正确提示；允许手动选 PC。
 - [ ] NAS Bash 在真实服务器运行：枚举、输出冲突、字节统计、预演、异常图片、取消均通过。
 - [ ] NAS 断线不误报停止；远端独立会话继续/结束可重查；PID 重用不误杀；未确认的进程组不会显示已取消；恢复日志保留本次成功/失败计数。
