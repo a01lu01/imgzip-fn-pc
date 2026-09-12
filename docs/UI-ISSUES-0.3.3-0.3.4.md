@@ -30,3 +30,23 @@
 锁定依赖还原、原生 C# 引用程序集类型检查、PowerShell/Bash 语法、XAML/XML 静态检查通过。Mac 类型检查工具补齐 ToggleButton 的 Primitives 命名空间；工具中的 XAML 字段替身与引用统一警告不构成 Windows 构建或运行验证。完整 XAML 构建在 Mac 上受 Windows 专用编译器限制，未生成安装包。
 
 本版本只提交源码，不创建 GitHub Release、不触发 CI、不上传安装程序。Windows 构建命令和逐项验收见 [WINDOWS.md](WINDOWS.md) 与 [VALIDATION.md](VALIDATION.md)。
+
+## 待修复（下一批处理）
+
+### T1. 并发调度测试依赖固定延时，首次冷启动会假失败（flaky）
+
+**记录时间**：2026-09-12（在 Windows 上拉取 0.3.4 并打包时发现）
+**状态**：待修复 —— 下次修改时一并处理
+**范围**：仅测试代码，不涉及调度逻辑
+
+**现象**：首次运行完整测试套件（此时还需先做 NuGet 还原与编译）时，用例 `NAS tasks serialize; PC tasks may run alongside`（`tests/ImgZip.Tests/Program.cs` 约 105–125 行）在断言 `Check(mock.ActiveRuns == 2, "PC should run alongside NAS")` 处失败；紧接着重跑一次即 **31 组全部通过**。
+
+**根因**：该用例用固定 `await Task.Delay(600)` 等待调度器把已恢复的 NAS 任务与新建的 PC 任务都启动起来。首轮运行机器负载高，600ms 内 PC 任务尚未拿到名额，断言即失败——属测试时序脆弱，不是调度缺陷（随后 31 组通过已证明调度行为正确）。
+
+**影响**：`build/windows.ps1` 默认先执行测试，这类抖动会挡住打包流程（本次是先用 `-SkipTests` 打包、另跑测试确认 31 组通过）。
+
+**修复方向**：
+
+1. 把该用例的固定等待改为条件轮询，例如新增 `WaitUntilAsync(Func<bool>, TimeSpan timeout)` 辅助方法，断言前等待 `mock.MaxActiveNas == 1 && mock.ActiveRuns == 2`，超时才失败并输出当时的 `RunRequests`/`ActiveRuns` 便于诊断。
+2. 排查 `tests/ImgZip.Tests/Program.cs` 与 `tests/ImgZip.Tests/LifecycleTests.cs` 中其他固定 `Task.Delay(...)` 的并发用例（PC 并发上限用例同样用 600ms），统一改为条件等待或带超时的轮询，避免同类假失败。
+3. 保持不变式断言（如“两项 NAS 请求真实执行且串行”“PC 与 NAS 可并行”），只调整等待方式，不放宽语义。
