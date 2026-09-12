@@ -4,7 +4,7 @@
 
 Windows 本机执行：C# / PowerShell 替代执行层 **34 组通过**；新增 NAS 设置夹取、NAS 不继承 PC 线程数、PC/NAS 线程预算隔离、认证失败与不可达提示区分。Git Bash 平台条件执行 NAS worker 并发检查 **4 组通过**：`THREADS=32` 被限制到 `min(nproc,4)`、`0`/`abc` 回退为 2、模拟低内存时降至 1。
 
-NAS 真机尚未重启和复测。需在设备恢复后保存 `dmesg`、`journalctl` 与 `~/.cache/imgzip/jobs/*/diagnostic.log`，再验证任务期间同时最多 2–4 个引擎进程、内存不被打满、SSH/SMB 持续可用。
+2026-09-13 NAS 重启后完成真机复测：默认并发 2 时 20/20 成功、峰值 2 个引擎进程、最低约 5.4 GB 可用；请求并发 32 时 worker 硬夹到 4，20/20 成功、峰值 4 个进程、最低约 4.9 GB 可用。任务期间 SSH 监控持续响应，结束后无残留 caesium 进程。上一启动周期 journal 因权限不足无法读取，历史 OOM 未取得直接证据。
 
 以下 0.3.4 Mac 检查作为历史基线保留；不能替代 0.3.5 的 Windows 安装与 NAS 稳定性验收。
 

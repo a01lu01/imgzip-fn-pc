@@ -4,7 +4,7 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 
 底层压缩内核为 [caesium-clt](https://github.com/Lymphatus/caesium-clt)（libcaesium，支持 JPEG/PNG/WebP/GIF）。界面为 WinUI 3 + C#（.NET 10），随安装包自带 PC 引擎与运行依赖。
 
-当前源码版本 **0.3.5**：修复 NAS 任务误用 PC 核数导致并发进程风暴的问题，并加入 NAS 核数、内存与硬上限保护。非视觉测试 34 组和 NAS worker 并发测试 4 组通过；真实 NAS 的 OOM 证据与稳定性验收仍待设备恢复后执行。详见 [0.3.5 修复记录](docs/UI-ISSUES-0.3.5-nas-concurrency.md)。
+当前源码版本 **0.3.5**：修复 NAS 任务误用 PC 核数导致并发进程风暴的问题，并加入 NAS 核数、内存与硬上限保护。非视觉测试 34 组和 NAS worker 并发测试 4 组通过；NAS 真机已验证 32 请求硬夹到 4 并发，20/20 成功且 SSH 全程可用。历史 OOM 因 journal 权限未能直接确认。详见 [0.3.5 修复记录](docs/UI-ISSUES-0.3.5-nas-concurrency.md)。
 
 ## 功能
 
