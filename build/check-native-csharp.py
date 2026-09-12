@@ -31,7 +31,8 @@ for source in project.glob("*.xaml"):
         field = element.get(xns + "Name")
         if field:
             tag = element.tag.rsplit("}", 1)[-1]
-            declarations.append(f"private Microsoft.UI.Xaml.Controls.{tag} {field} = null!;")
+            controls = "Microsoft.UI.Xaml.Controls.Primitives" if tag == "ToggleButton" else "Microsoft.UI.Xaml.Controls"
+            declarations.append(f"private {controls}.{tag} {field} = null!;")
     declarations.append("} }")
 (temporary / "XamlNamedElements.cs").write_text("\n".join(declarations))
 responses = ["/nologo", "/target:library", "/nullable:enable", "/langversion:14", "/out:\"" + str(temporary / "NativeCodeCheck.dll") + "\""]

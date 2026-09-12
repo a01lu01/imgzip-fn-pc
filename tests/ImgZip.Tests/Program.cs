@@ -2,6 +2,14 @@ using System.Diagnostics;
 using System.Text.Json;
 using ImgZip.Core;
 
+using var ui = new SerialTestContext();
+SynchronizationContext.SetSynchronizationContext(ui);
+var testRun = RunTestsAsync();
+ui.Pump(testRun);
+testRun.GetAwaiter().GetResult();
+
+async Task RunTestsAsync()
+{
 var root = Path.GetFullPath(args.Length > 0 ? args[0] : ".");
 var scratch = Path.Combine(root, "artifacts", "tests", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(scratch);
@@ -60,7 +68,8 @@ await Test("unknown task retained; draft stays editable; inspection recovers", a
     await vm.SetSourcesAsync([path]);
     await vm.StartAsync();
     Check(vm.IsUnknown && vm.Tasks.Any(t => t.IsUnknown), "Unknown task was not retained");
-    Check(File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Legacy marker missing for unresolved task");
+    Check(Directory.GetFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Length == 1, "Unresolved task record missing");
+    Check(vm.CanEdit, "Draft controls should remain enabled");
     vm.ClearSources(); Check(vm.SourcePath != path, "Draft should stay editable while a task is unresolved");
     await vm.InspectAsync(); Check(vm.State == "succeeded" && !vm.Tasks.Any(t => t.IsUnknown), "Inspection did not recover");
     Check(!File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Confirmed task marker retained");
@@ -77,7 +86,7 @@ await Test("unknown task retained; draft stays editable; inspection recovers", a
 
 await Test("PC concurrency respects configured limit and queues the rest", async () =>
 {
-    var mock = new FakeWorker { HoldRuns = true };
+    var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded" };
     var store = new ConfigStore(Path.Combine(scratch, "mt"));
     await store.SaveAsync(new AppConfig { PcConcurrency = 2 });
     var vm = new MainViewModel(mock, store, "unused");
@@ -98,22 +107,24 @@ await Test("PC concurrency respects configured limit and queues the rest", async
 
 await Test("NAS tasks serialize; PC tasks may run alongside", async () =>
 {
-    var mock = new FakeWorker { HoldRuns = true };
+    var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded" };
     var store = new ConfigStore(Path.Combine(scratch, "mt-nas"));
-    await store.SaveAsync(new AppConfig { Server = "nas.local", User = "why", KeyPath = @"C:\keys\id_nas", NasHosts = ["nas.local"] });
+    await store.SaveAsync(new AppConfig { PcConcurrency = 2 });
+    var disk = new TaskStore(store.DirectoryPath);
+    foreach (var source in new[] { @"\\nas.local\photos\a.jpg", @"\\nas.local\photos\b.jpg" })
+        await disk.SaveAsync(new TaskRecord { Request = new() { Engine = "nas", Sources = [source], StateDirectory = store.DirectoryPath } });
     var vm = new MainViewModel(mock, store, "unused");
     await vm.InitializeAsync();
-    var runs = new List<Task>();
-    foreach (var share in new[] { @"\\nas.local\photos\a.jpg", @"\\nas.local\photos\b.jpg" })
-    {
-        await vm.SetSourcesAsync([share]);
-        vm.EngineIndex = 1;
-        runs.Add(vm.StartAsync());
-    }
+    Check(vm.Tasks.All(t => t.CanResume), "Recovered queue must wait for user");
+    var runs = vm.Tasks.ToArray().Select(vm.ResumeTaskAsync).ToList();
+    await vm.SetSourcesAsync([Path.Combine(scratch, "alongside.jpg")]);
+    runs.Add(vm.StartAsync());
     await Task.Delay(600);
-    Check(mock.MaxActiveNas <= 1, $"NAS tasks overlapped: {mock.MaxActiveNas}");
+    Check(mock.MaxActiveNas == 1 && mock.RunRequests.Count(r => r.Engine == "nas") == 1, "NAS test must start exactly one task before release");
+    Check(mock.ActiveRuns == 2, "PC should run alongside NAS");
     mock.ReleaseRuns();
-    await Task.WhenAll(runs);
+    await Task.WhenAll(runs).WaitAsync(TimeSpan.FromSeconds(10));
+    Check(mock.RunRequests.Count(r => r.Engine == "nas") == 2, "Both NAS requests must actually execute");
 });
 
 await Test("successful task record is cleaned up and removed from the list", async () =>
@@ -128,6 +139,8 @@ await Test("successful task record is cleaned up and removed from the list", asy
     Check(!vm.Tasks.Any(), "Successful task should be removed from the list");
     Check(!Directory.EnumerateFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Any(), "Task record should be deleted");
 });
+
+await LifecycleTests.RunAsync(scratch, Test);
 
 var shell = Environment.GetEnvironmentVariable("IMGZIP_TEST_PWSH") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe") : Path.Combine(root, ".tools/pwsh/pwsh"));
 if (!File.Exists(shell)) throw new Exception("PowerShell test runtime missing: " + shell);
@@ -262,12 +275,15 @@ await Test("client detects malformed and interrupted worker streams", async () =
 Console.WriteLine($"\n{checks} checks passed. No visual or interactive browser/Windows validation performed.");
 Console.WriteLine("Evidence: " + scratch);
 
+}
+
 sealed class FakeWorker : IWorkerClient
 {
     public string JobId { get; private set; } = "";
     public TaskCompletionSource? PauseRun { get; set; }
     public string RunState { get; set; } = "unknown";
     public bool HoldRuns { get; set; }
+    public List<WorkerRequest> RunRequests { get; } = [];
     public int ActiveRuns;
     public int MaxActiveRuns;
     public int ActiveNas;
@@ -283,6 +299,7 @@ sealed class FakeWorker : IWorkerClient
         var tracked = request.Operation == "run";
         if (tracked)
         {
+            RunRequests.Add(request);
             Interlocked.Increment(ref ActiveRuns);
             MaxActiveRuns = Math.Max(MaxActiveRuns, ActiveRuns);
             if (request.Engine == "nas") { Interlocked.Increment(ref ActiveNas); MaxActiveNas = Math.Max(MaxActiveNas, ActiveNas); }
@@ -305,4 +322,20 @@ sealed class FakeWorker : IWorkerClient
             }
         }
     }
+}
+
+sealed class SerialTestContext : SynchronizationContext, IDisposable
+{
+    private readonly System.Collections.Concurrent.BlockingCollection<(SendOrPostCallback Callback, object? State)> queue = new();
+    public override void Post(SendOrPostCallback callback, object? state) => queue.Add((callback, state));
+    public void Pump(Task task)
+    {
+        var deadline = DateTime.UtcNow.AddMinutes(3);
+        while (!task.IsCompleted)
+        {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("Test run timed out");
+            if (queue.TryTake(out var item, 100)) item.Callback(item.State);
+        }
+    }
+    public void Dispose() => queue.Dispose();
 }

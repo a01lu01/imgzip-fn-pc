@@ -4,6 +4,8 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 
 底层压缩内核为 [caesium-clt](https://github.com/Lymphatus/caesium-clt)（libcaesium，支持 JPEG/PNG/WebP/GIF）。界面为 WinUI 3 + C#（.NET 10），随安装包自带 PC 引擎与运行依赖。
 
+当前源码版本 **0.3.4**：修复任务调度、排队取消、恢复与结果通知，保留 0.3.3 界面和双引擎性能优化。非视觉测试 31 组通过；本版本的 Windows 打包、真实 PC/NAS 与视觉交互仍待验收。详见 [修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)。
+
 ## 功能
 
 - 双引擎：PC 引擎随包部署；NAS 引擎经 SSH 在 NAS 侧执行
@@ -62,7 +64,9 @@ pwsh -NoProfile -File build/windows.ps1 -BootstrapCompiler -SkipTests
 & "$env:LOCALAPPDATA\Programs\ImgZip\ImgZip.exe" --path '\\NAS\photos\旅行'
 ```
 
-应用按用户保持单实例：任务执行中或状态未知时，新的来源会被拒绝，不会覆盖当前任务。
+应用按用户保持单实例，右键再次启动会把来源交给现有窗口的草稿区。任务运行期间可继续添加来源、选择预设和引擎；已提交任务使用独立参数快照，草稿修改不会改变它们。
+
+排队任务可“移除”，移除后不会再调用压缩引擎。0.3.4 新记录中明确尚未启动的任务，重开后显示“等待手动继续”，可“继续”或“移除”，不会自动压缩。已启动但状态未知的任务继续占用对应引擎名额，确认结束后才释放；旧记录无法证明未启动时也按待检查恢复。关闭窗口时，“取消并等待”处理全部任务，无法确认停止时保留窗口和任务记录。
 
 ## NAS 引擎准备
 
@@ -82,4 +86,5 @@ NAS 侧需要 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk
 - [协议说明](docs/PROTOCOL.md)
 - [检查与验收](docs/VALIDATION.md)
 - [界面设计](docs/DESIGN-A.md)
+- [0.3.4 修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)
 - 界面方案演示（HTML，本地打开）：[design-demo](design-demo/README.md)

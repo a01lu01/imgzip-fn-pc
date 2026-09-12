@@ -89,11 +89,13 @@
                       <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" />
                       <TextBlock Text="{Binding CurrentFile}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
                       <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
+                      <TextBlock Text="{Binding Message}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasMessage, Converter={StaticResource BoolVisibility}}" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center" MinWidth="96">
                       <Button Content="取消" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding CanCancel, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="移除" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding IsQueued, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="重新检查" FontSize="11" Click="TaskInspect_Click" Visibility="{Binding IsUnknown, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                      <Button Content="继续" FontSize="11" Click="TaskResume_Click" Visibility="{Binding CanResume, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                      <Button Content="移除" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding CanRemove, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                      <Button Content="重新检查" FontSize="11" Click="TaskInspect_Click" IsEnabled="{Binding CanInspect}" Visibility="{Binding IsUnknown, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
                       <Button Content="打开输出" FontSize="11" Click="TaskOpen_Click" Visibility="{Binding CanOpenOutput, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
                       <Button Content="失败详情" FontSize="11" Click="TaskFailures_Click" Visibility="{Binding HasFailures, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
                     </StackPanel>

@@ -187,6 +187,10 @@ public sealed partial class MainWindow : Window
     {
         if (TaskOf(sender) is { } task) await Safe(() => ViewModel.InspectTaskAsync(task));
     }
+    private async void TaskResume_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskOf(sender) is { } task) await Safe(() => ViewModel.ResumeTaskAsync(task));
+    }
     private void TaskOpen_Click(object sender, RoutedEventArgs e)
     {
         if (TaskOf(sender) is { } task) OpenFolder(task.OpenOutputPath);
@@ -257,7 +261,7 @@ public sealed partial class MainWindow : Window
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         SaveWindowPlacement();
-        if (allowClose || !ViewModel.IsLocked) return;
+        if (allowClose || !ViewModel.HasUnfinishedTasks) return;
         args.Cancel = true;
         if (showingClose) return;
         showingClose = true;
@@ -267,15 +271,16 @@ public sealed partial class MainWindow : Window
             {
                 XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
                 Title = "任务尚未确认结束",
-                Content = "关闭窗口不会保证停止任务。可以先取消并等待确认；仅关闭窗口后，下次启动将重新检查任务状态。",
-                PrimaryButtonText = ViewModel.CanCancel ? "取消并等待" : "重新检查",
+                Content = "将取消全部运行和排队任务，并重新检查状态未知的任务。仅关闭窗口不会保证停止任务；重开后，未启动任务等待手动继续，其他任务需要重新检查。",
+                PrimaryButtonText = "取消并等待",
                 SecondaryButtonText = "仅关闭窗口", CloseButtonText = "返回"
             };
             var result = await dialog.ShowAsync();
             if (result == ContentDialogResult.Primary)
             {
-                if (ViewModel.CanCancel) await ViewModel.CancelAsync(); else await ViewModel.InspectAsync();
-                if (!ViewModel.IsLocked) { allowClose = true; Close(); }
+                await ViewModel.CancelAllAndWaitAsync();
+                if (!ViewModel.HasUnfinishedTasks) { allowClose = true; Close(); }
+                else ViewModel.Message = "仍有任务尚未确认结束，窗口已保留。请在任务列表中重新检查。";
             }
             else if (result == ContentDialogResult.Secondary) { allowClose = true; Close(); }
         }
