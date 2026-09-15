@@ -4,7 +4,7 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 
 底层压缩内核为 [caesium-clt](https://github.com/Lymphatus/caesium-clt)（libcaesium，支持 JPEG/PNG/WebP/GIF）。界面为 WinUI 3 + C#（.NET 10），随安装包自带 PC 引擎与运行依赖。
 
-当前源码版本 **0.3.5**：修复 NAS 任务误用 PC 核数导致并发进程风暴的问题，并加入 NAS 核数、内存与硬上限保护。非视觉测试 34 组和 NAS worker 并发测试 4 组通过；NAS 真机已验证 32 请求硬夹到 4 并发，20/20 成功且 SSH 全程可用。历史 OOM 因 journal 权限未能直接确认。详见 [0.3.5 修复记录](docs/UI-ISSUES-0.3.5-nas-concurrency.md)。
+当前源码版本 **0.3.6**：文件夹压缩可选择把未被压缩的其他普通文件复制到输出目录，支持递归、隐藏文件、时间属性保留、独立进度和严格失败统计。新增 43 组 C# / PowerShell 检查，以及 NAS 并发与复制脚本测试；详见 [0.3.6 功能记录](docs/FEATURES-0.3.6-copy-other-files.md)。
 
 ## 功能
 
@@ -12,6 +12,7 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 - 右键菜单：文件、文件夹、文件夹空白处（Win11 需点“显示更多选项”）
 - 预设：收藏 JPEG（q90 / 长边 4000）、收藏 WebP、分享 WebP（q80 / 2560）
 - 高级设置：质量、格式、缩放方式与尺寸、目标体积、线程、无损、不放大、递归、预演
+- 其他文件归档：文件夹任务可选择复制未参与压缩的普通文件，递归时保留目录层级
 - 输出到 `<源目录>_compressed`（已存在则 `_compressed_2`…），不覆盖原图或旧结果
 - 单实例运行；准备阶段不显示虚构百分比，进度来自真实完成事件
 - 多任务并行：PC 任务按 CPU 核数并发（设置可调 1–64），NAS 任务串行但可与 PC 并行；任务列表逐条显示进度并可取消/重查
@@ -66,6 +67,8 @@ pwsh -NoProfile -File build/windows.ps1 -BootstrapCompiler -SkipTests
 
 应用按用户保持单实例，右键再次启动会把来源交给现有窗口的草稿区。任务运行期间可继续添加来源、选择预设和引擎；已提交任务使用独立参数快照，草稿修改不会改变它们。
 
+“复制其他文件”只对选择单个文件夹时生效。勾选后，图片仍按预设压缩；其他普通文件在图片处理完成后复制到同一输出目录。该选项包括隐藏/系统文件和 `Thumbs.db`，但跳过符号链接、重解析点和空目录。列表中的勾选状态会保存在本机配置中。
+
 排队任务可“移除”，移除后不会再调用压缩引擎。0.3.4 新记录中明确尚未启动的任务，重开后显示“等待手动继续”，可“继续”或“移除”，不会自动压缩。已启动但状态未知的任务继续占用对应引擎名额，确认结束后才释放；旧记录无法证明未启动时也按待检查恢复。关闭窗口时，“取消并等待”处理全部任务，无法确认停止时保留窗口和任务记录。
 
 ## NAS 引擎准备
@@ -86,6 +89,7 @@ NAS 侧需要 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk
 - [协议说明](docs/PROTOCOL.md)
 - [检查与验收](docs/VALIDATION.md)
 - [界面设计](docs/DESIGN-A.md)
+- [0.3.6 其他文件复制](docs/FEATURES-0.3.6-copy-other-files.md)
 - [0.3.5 NAS 并发事故与修复](docs/UI-ISSUES-0.3.5-nas-concurrency.md)
 - [0.3.4 修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)
 - 界面方案演示（HTML，本地打开）：[design-demo](design-demo/README.md)

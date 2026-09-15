@@ -27,6 +27,8 @@ try {
         if ($bashRoot -match '^([A-Za-z]):') { $bashRoot = '/' + $Matches[1].ToLowerInvariant() + $bashRoot.Substring(2) }
         & $bashPath -lc 'exec "$@"' imgzip ($bashRoot.TrimEnd('/') + '/tests/nas-worker-concurrency.sh') $bashRoot
         if ($LASTEXITCODE -ne 0) { throw 'NAS worker concurrency checks failed.' }
+        & $bashPath -lc 'exec "$@"' imgzip ($bashRoot.TrimEnd('/') + '/tests/nas-worker-copy.sh') $bashRoot
+        if ($LASTEXITCODE -ne 0) { throw 'NAS worker copy checks failed.' }
     } else {
         Write-Host 'SKIP nas-worker concurrency checks: bash.exe not found'
     }

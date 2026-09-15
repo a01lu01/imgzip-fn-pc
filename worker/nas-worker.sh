@@ -9,11 +9,13 @@ job_root="$HOME/.cache/imgzip/jobs"
 job_dir="$job_root/$JOB_ID"
 engine="$HOME/bin/caesiumclt"
 total=0 completed=0 succeeded=0 failed=0 skipped=0 before=0 after=0
+copy_total=0 copy_completed=0 copied=0 copy_failed=0 copied_bytes=0
 output='' stage='' dry=false
+: "${COPY_SKIPPED:=false}"
 event() {
   local kind="$1" state="$2" path="${3:-}" message="${4:-}" index="${5:--1}" size_before="${6:-$before}" size_after="${7:-$after}"
-  printf '{"version":1,"jobId":"%s","type":"%s","state":"%s","total":%s,"completed":%s,"succeeded":%s,"failed":%s,"skipped":%s,"beforeBytes":%s,"afterBytes":%s,"index":%s,"dryRun":%s,"path64":"%s","output64":"%s","message64":"%s"}\n' \
-    "$JOB_ID" "$kind" "$state" "$total" "$completed" "$succeeded" "$failed" "$skipped" "$size_before" "$size_after" "$index" "$dry" "$(encode "$path")" "$(encode "$output")" "$(encode "$message")"
+  printf '{"version":1,"jobId":"%s","type":"%s","state":"%s","total":%s,"completed":%s,"succeeded":%s,"failed":%s,"skipped":%s,"copyTotal":%s,"copyCompleted":%s,"copied":%s,"copyFailed":%s,"copiedBytes":%s,"beforeBytes":%s,"afterBytes":%s,"index":%s,"dryRun":%s,"path64":"%s","output64":"%s","message64":"%s"}\n' \
+    "$JOB_ID" "$kind" "$state" "$total" "$completed" "$succeeded" "$failed" "$skipped" "$copy_total" "$copy_completed" "$copied" "$copy_failed" "$copied_bytes" "$size_before" "$size_after" "$index" "$dry" "$(encode "$path")" "$(encode "$output")" "$(encode "$message")"
 }
 terminal() {
   # stdout is the journal during execution; finish is visible only after its event is durable.
@@ -100,7 +102,7 @@ case "$MODE" in
     command -v setsid >/dev/null 2>&1 || { terminal failed 'setsid is required for verifiable NAS cancellation'; exit 0; }
     mkdir -p -- "$job_root" || exit 1
     mkdir -- "$job_dir" || { terminal failed 'Task ID already exists'; exit 0; }
-    for variable in JOB_ID SOURCES_B64 FORMAT QUALITY RESIZE PIXELS MAX_SIZE THREADS LOSSLESS NO_UPSCALE RECURSE DRY_RUN; do declare -p "$variable" >> "$job_dir/request.sh"; done
+    for variable in JOB_ID SOURCES_B64 FORMAT QUALITY RESIZE PIXELS MAX_SIZE THREADS LOSSLESS NO_UPSCALE RECURSE COPY_SKIPPED DRY_RUN; do declare -p "$variable" >> "$job_dir/request.sh"; done
     printf '%s' "$SCRIPT_B64" | base64 -d > "$job_dir/runner.sh" || exit 1
     : > "$job_dir/events.jsonl"
     # Each task has its own session/process group. The SSH connection is just a reader.
@@ -145,12 +147,19 @@ if [ "${#sources[@]}" -gt 1 ]; then
   done
 fi
 files=()
+copy_files=()
 include_file() {
   local file="$1" lower
   lower=$(printf '%s' "$file" | tr '[:upper:]' '[:lower:]')
   if [ -L "$file" ]; then skipped=$((skipped + 1)); return; fi
-  case "$lower" in *.jpg|*.jpeg|*.png|*.webp|*.gif) files+=("$file");; *) skipped=$((skipped + 1));; esac
+  case "$lower" in
+    *.jpg|*.jpeg|*.png|*.webp|*.gif) files+=("$file");;
+    *) skipped=$((skipped + 1)); [ "$COPY_SKIPPED" != true ] || copy_files+=("$file");;
+  esac
 }
+if [ "$COPY_SKIPPED" = true ] && { [ "${#sources[@]}" -ne 1 ] || [ ! -d "${sources[0]}" ]; }; then
+  COPY_SKIPPED=false
+fi
 for source_path in "${sources[@]}"; do
   if [ -L "$source_path" ]; then skipped=$((skipped + 1)); continue; fi
   if [ -d "$source_path" ]; then
@@ -164,6 +173,7 @@ for source_path in "${sources[@]}"; do
   else terminal failed 'Source path does not exist'; exit 0; fi
 done
 total=${#files[@]}
+copy_total=${#copy_files[@]}
 planned=()
 declare -A used_names=()
 for file in "${files[@]}"; do
@@ -178,6 +188,19 @@ for file in "${files[@]}"; do
   done
   used_names[$key]=1; planned+=("$candidate")
 done
+planned_copies=()
+for file in "${copy_files[@]}"; do
+  relative="${file#"$source_root"/}"; directory=$(dirname -- "$relative")
+  leaf=$(basename -- "$relative"); stem="${leaf%.*}"; extension=''
+  [ "$leaf" = "$stem" ] || extension=".${leaf##*.}"
+  candidate="$directory/$leaf"; serial=2
+  while :; do
+    key=$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]')
+    [ -n "${used_names[$key]:-}" ] || break
+    candidate="$directory/${stem}_$serial$extension"; serial=$((serial + 1))
+  done
+  used_names[$key]=1; planned_copies+=("$candidate")
+done
 output="${source_root%/}_compressed"
 if [ "$source_root" = / ]; then terminal failed 'Select a subfolder instead of the filesystem root'; exit 0; fi
 suffix=2
@@ -185,12 +208,48 @@ while case_match "$output" >/dev/null; do output="${source_root%/}_compressed_$s
 event manifest ready
 if [ -f "$job_dir/cancel" ]; then cancelled; fi
 if [ "$dry" = true ]; then terminal dryRun 'Manifest validated; no output created'; exit 0; fi
-if [ "$total" -eq 0 ]; then terminal empty 'No supported images'; exit 0; fi
+if [ "$total" -eq 0 ] && [ "$copy_total" -eq 0 ]; then terminal empty 'No supported images or files to copy'; exit 0; fi
 while ! mkdir -- "$output" 2>/dev/null; do
   if [ ! -e "$output" ] && [ ! -L "$output" ]; then terminal failed 'Cannot create output directory'; exit 0; fi
   output="${source_root%/}_compressed_$suffix"; suffix=$((suffix + 1))
 done
 event manifest ready
+copy_file() {
+  local index="$1"
+  local file="${copy_files[$index]}" relative="${planned_copies[$index]}"
+  local relative_dir destination leaf target temporary size
+  relative_dir=$(dirname -- "$relative"); destination="$output"
+  if [ "$relative_dir" != . ]; then destination="$output/$relative_dir"; fi
+  if ! mkdir -p -- "$destination"; then
+    copy_failed=$((copy_failed + 1)); copy_completed=$((copy_completed + 1))
+    event copy failed "$file" 'Cannot create copy destination' "$index" 0 0; return
+  fi
+  leaf=$(basename -- "$relative"); target="$destination/$leaf"
+  temporary="$destination/.imgzip-copy-$JOB_ID-$index.tmp"
+  rm -f -- "$temporary"
+  size=$(stat -c%s -- "$file" 2>/dev/null || printf 0)
+  if cp -p -- "$file" "$temporary" && ln -- "$temporary" "$target"; then
+    rm -f -- "$temporary"
+    copied=$((copied + 1)); copy_completed=$((copy_completed + 1)); copied_bytes=$((copied_bytes + size))
+    event copy copied "$file" '' "$index" 0 0
+  else
+    rm -f -- "$temporary"
+    copy_failed=$((copy_failed + 1)); copy_completed=$((copy_completed + 1))
+    event copy failed "$file" 'Cannot copy file safely' "$index" 0 0
+  fi
+}
+copy_all() {
+  local index
+  for index in "${!copy_files[@]}"; do
+    [ ! -f "$job_dir/cancel" ] || cancelled
+    copy_file "$index"
+  done
+}
+if [ "$total" -eq 0 ]; then
+  copy_all
+  if [ "$copy_failed" -eq 0 ]; then terminal succeeded; else terminal failed; fi
+  exit 0
+fi
 # 并行池：caesiumclt 的 --threads 是作业级并行，单文件调用时多线程无效，
 # 这里并发跑多个单文件作业以吃满多核（4 核实测约 3.2 倍）。
 # 安全上限：客户端请求值、NAS 实际核数、硬上限三者取最小——客户端传什么都不得突破。
@@ -322,6 +381,7 @@ while [ "$next" -lt "$total" ] || [ "$running" -gt 0 ]; do
     rm -f -- "$result"
   done
 done
-if [ "$failed" -eq 0 ]; then terminal succeeded
-elif [ "$succeeded" -gt 0 ]; then terminal partial
+copy_all
+if [ "$failed" -eq 0 ] && [ "$copy_failed" -eq 0 ]; then terminal succeeded
+elif [ "$succeeded" -gt 0 ] || [ "$copied" -gt 0 ]; then terminal partial
 else terminal failed; fi

@@ -30,7 +30,10 @@
               <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><Button Content="添加图片" IsEnabled="{Binding CanEdit}" Click="Files_Click" FontSize="12" Padding="10,6" /><Button Content="选择文件夹" IsEnabled="{Binding CanEdit}" Click="Folder_Click" FontSize="12" Padding="10,6" /></StackPanel>
             </Grid>
           </Border>
-          <CheckBox Content="包含子文件夹" IsEnabled="{Binding CanEdit}" IsChecked="{Binding Recurse, Mode=TwoWay}" FontSize="12" MinHeight="26" />
+          <StackPanel Orientation="Horizontal" Spacing="18">
+            <CheckBox Content="复制其他文件" IsEnabled="{Binding CanCopySkippedFiles}" IsChecked="{Binding CopySkippedFiles, Mode=OneWay}" Click="CopySkippedFiles_Click" FontSize="12" MinHeight="26" />
+            <CheckBox Content="包含子文件夹" IsEnabled="{Binding CanEdit}" IsChecked="{Binding Recurse, Mode=TwoWay}" FontSize="12" MinHeight="26" />
+          </StackPanel>
           <TextBlock Text="压缩预设" Style="{StaticResource SectionHeading}" />
           <Grid ColumnSpacing="8">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
@@ -89,6 +92,7 @@
                       <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" />
                       <TextBlock Text="{Binding CurrentFile}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
                       <TextBlock Text="{Binding ConcurrencyText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding CopyProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" Visibility="{Binding HasCopyProgress, Converter={StaticResource BoolVisibility}}" />
                       <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
                       <TextBlock Text="{Binding Message}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasMessage, Converter={StaticResource BoolVisibility}}" />
                     </StackPanel>

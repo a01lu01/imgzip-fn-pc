@@ -208,6 +208,8 @@ function Select-LocalSources {
 function Read-Manifest {
     param([string[]]$Sources)
     $files = New-Object 'System.Collections.Generic.List[object]'
+    $copyFiles = New-Object 'System.Collections.Generic.List[object]'
+    $copySkipped = [bool]$request.options.copySkippedFiles -and $Sources.Count -eq 1 -and (Test-Path -LiteralPath $Sources[0] -PathType Container)
     $script:skippedCount = 0
     $pending = New-Object 'System.Collections.Generic.Stack[string]'
     foreach ($source in $Sources) { $pending.Push($source) }
@@ -222,9 +224,16 @@ function Read-Manifest {
             }
         } elseif ($item.Extension.ToLowerInvariant() -in @('.jpg','.jpeg','.png','.webp','.gif')) {
             $files.Add(@{path=$item.FullName;size=[long]$item.Length})
-        } else { $script:skippedCount++ }
+        } else {
+            $script:skippedCount++
+            if ($copySkipped) { $copyFiles.Add(@{path=$item.FullName;size=[long]$item.Length}) }
+        }
     }
-    return ,@($files.ToArray() | Sort-Object { $_.path })
+    return @{
+        images=@($files.ToArray() | Sort-Object { $_.path })
+        copies=@($copyFiles.ToArray() | Sort-Object { $_.path })
+        skipped=$script:skippedCount
+    }
 }
 function Unique-Output([string]$Base, [switch]$Create) {
     $candidate = $Base; $suffix = 2
@@ -244,6 +253,7 @@ function Stop-Engine($Process) {
         $killer = Start-Child (Join-Path $env:SystemRoot 'System32/taskkill.exe') @('/PID',"$($Process.Id)",'/T','/F')
         $null = $killer.StandardOutput.ReadToEndAsync(); $null = $killer.StandardError.ReadToEndAsync()
         $killer.WaitForExit(); $killer.Dispose()
+        if (-not $Process.WaitForExit(2000)) { Stop-Process -Id $Process.Id -Force -ErrorAction Stop }
     } else { $Process.Kill($true) }
     if (-not $Process.WaitForExit(10000)) { throw 'Engine termination could not be confirmed.' }
     $script:terminationUnconfirmed = $false
@@ -282,12 +292,49 @@ function Move-BatchOutputs {
         }
     }
 }
+function Copy-SkippedFiles {
+    param($CopyFiles, [string]$SourceRoot, [string]$Output, $Counts)
+    foreach ($copy in @($CopyFiles)) {
+        if (Test-Path -LiteralPath $cancelFile) { break }
+        $sourcePath = [string]$copy.path
+        $relative = $sourcePath.Substring($SourceRoot.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $relativeDirectory = [IO.Path]::GetDirectoryName($relative)
+        $destination = if ($relativeDirectory) { Join-Path $Output $relativeDirectory } else { $Output }
+        $null = [IO.Directory]::CreateDirectory($destination)
+        $leaf = [IO.Path]::GetFileName($relative); $target = Join-Path $destination $leaf; $serial = 2
+        while (Test-Path -LiteralPath $target) {
+            $target = Join-Path $destination ([IO.Path]::GetFileNameWithoutExtension($leaf) + "_$serial" + [IO.Path]::GetExtension($leaf)); $serial++
+        }
+        $temporary = Join-Path $destination ('.imgzip-copy-' + $request.jobId + '-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+        try {
+            $sourceItem = Get-Item -LiteralPath $sourcePath -Force
+            [IO.File]::Copy($sourcePath, $temporary, $false)
+            [IO.File]::SetLastWriteTimeUtc($temporary, $sourceItem.LastWriteTimeUtc)
+            $basicAttributes = $sourceItem.Attributes -band ([IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System -bor [IO.FileAttributes]::Archive)
+            [IO.File]::SetAttributes($temporary, $basicAttributes)
+            [IO.File]::Move($temporary, $target)
+            $Counts.copied++; $Counts.copyCompleted++; $Counts.copiedBytes += [long]$sourceItem.Length
+            $event = $Counts.Clone(); $event.type = 'copy'; $event.state = 'copied'; $event.path = $sourcePath
+            Emit $event
+        } catch {
+            if (Test-Path -LiteralPath $temporary) {
+                [IO.File]::SetAttributes($temporary, [IO.FileAttributes]::Normal)
+                Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+            }
+            $Counts.copyFailed++; $Counts.copyCompleted++
+            $event = $Counts.Clone(); $event.type = 'copy'; $event.state = 'failed'; $event.path = $sourcePath; $event.message = $_.Exception.Message
+            Emit $event
+        }
+    }
+}
 function Run-Local {
     $sources = Select-LocalSources
     $sourceRoot = if (Test-Path -LiteralPath $sources[0] -PathType Container) { $sources[0].TrimEnd([IO.Path]::DirectorySeparatorChar) } else { [IO.Path]::GetDirectoryName($sources[0]) }
     if (-not $sourceRoot -or $sourceRoot -eq [IO.Path]::GetPathRoot($sources[0]).TrimEnd([IO.Path]::DirectorySeparatorChar)) { throw 'Select a subfolder instead of the drive root.' }
     Emit @{type='phase';state='preparing';message='正在建立文件清单'}
-    $files = Read-Manifest $sources
+    $manifest = Read-Manifest $sources
+    $files = @($manifest.images)
+    $copyFiles = @($manifest.copies)
     $total = $files.Count
     $planned = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $files) {
@@ -305,16 +352,23 @@ function Run-Local {
         $file.relativeOutput = $candidate
     }
     $output = Unique-Output ($sourceRoot + '_compressed')
-    $counts = @{total=$total;completed=0;succeeded=0;failed=0;skipped=$skippedCount;beforeBytes=[long]0;afterBytes=[long]0;output=$output;dryRun=[bool]$request.options.dryRun}
+    $counts = @{total=$total;completed=0;succeeded=0;failed=0;skipped=$skippedCount;copyTotal=$copyFiles.Count;copyCompleted=0;copied=0;copyFailed=0;copiedBytes=[long]0;beforeBytes=[long]0;afterBytes=[long]0;output=$output;dryRun=[bool]$request.options.dryRun}
     $script:localCounts = $counts
     $manifest = $counts.Clone(); $manifest.type='manifest'; $manifest.state='ready'; Emit $manifest
     if (Test-Path -LiteralPath $cancelFile) { $counts.type='finished';$counts.state='cancelled';Emit $counts;return }
     if ($request.options.dryRun) { $counts.type='finished';$counts.state='dryRun';Emit $counts;return }
-    if ($total -eq 0) { $counts.type='finished';$counts.state='empty';Emit $counts;return }
-    if (-not (Test-Path -LiteralPath $request.enginePath -PathType Leaf)) { throw '本机引擎缺失：请重新安装应用。' }
+    if ($total -eq 0 -and $copyFiles.Count -eq 0) { $counts.type='finished';$counts.state='empty';Emit $counts;return }
+    if ($total -gt 0 -and -not (Test-Path -LiteralPath $request.enginePath -PathType Leaf)) { throw '本机引擎缺失：请重新安装应用。' }
     $output = Unique-Output ($sourceRoot + '_compressed') -Create
     $counts.output = $output
     $manifest = $counts.Clone();$manifest.type='manifest';$manifest.state='ready';Emit $manifest
+    if ($total -eq 0) {
+        if (-not (Test-Path -LiteralPath $cancelFile)) { Copy-SkippedFiles $copyFiles $sourceRoot $output $counts }
+        $counts.type='finished'
+        $counts.state = if (Test-Path -LiteralPath $cancelFile) { 'cancelled' } elseif ($counts.copyFailed -gt 0) { 'failed' } else { 'succeeded' }
+        Emit $counts
+        return
+    }
     # 组批：同批共享参数；按“是否需要 --format 转换”分组，避免引擎拒绝同格式转换。
     $cores = [Math]::Max(1, [Environment]::ProcessorCount)
     $batchLimit = [Math]::Min(16, [Math]::Max(4, 2 * $cores))
@@ -397,8 +451,11 @@ function Run-Local {
         }
         if ($wasCancelled) { break }
     }
+    if (-not (Test-Path -LiteralPath $cancelFile)) { Copy-SkippedFiles $copyFiles $sourceRoot $output $counts }
     $counts.type='finished'
-    $counts.state = if (Test-Path -LiteralPath $cancelFile) { 'cancelled' } elseif ($counts.failed -eq 0) { 'succeeded' } elseif ($counts.succeeded -gt 0) { 'partial' } else { 'failed' }
+    $hasSuccess = $counts.succeeded -gt 0 -or $counts.copied -gt 0
+    $hasFailure = $counts.failed -gt 0 -or $counts.copyFailed -gt 0
+    $counts.state = if (Test-Path -LiteralPath $cancelFile) { 'cancelled' } elseif (-not $hasFailure) { 'succeeded' } elseif ($hasSuccess) { 'partial' } else { 'failed' }
     Emit $counts
 }
 
@@ -460,7 +517,7 @@ try {
             if (Test-Path -LiteralPath $cancelFile) { Finish 'cancelled' '已取消，未启动 NAS 压缩任务。'; exit 0 }
             $o=$request.options
             $variables=@{SOURCES_B64=(($paths | ForEach-Object { B64 $_ }) -join "`n");FORMAT=$o.format;QUALITY=$o.quality;RESIZE=$o.resize;PIXELS=$o.pixels;MAX_SIZE=$o.maxSize;THREADS=$o.threads}
-            foreach ($pair in @(@('LOSSLESS','lossless'),@('NO_UPSCALE','noUpscale'),@('RECURSE','recurse'),@('DRY_RUN','dryRun'))) { $variables[$pair[0]]=([bool]$o.($pair[1])).ToString().ToLowerInvariant() }
+            foreach ($pair in @(@('LOSSLESS','lossless'),@('NO_UPSCALE','noUpscale'),@('RECURSE','recurse'),@('COPY_SKIPPED','copySkippedFiles'),@('DRY_RUN','dryRun'))) { $variables[$pair[0]]=([bool]$o.($pair[1])).ToString().ToLowerInvariant() }
             $remoteMayBeRunning=$true
             [IO.File]::WriteAllText((Join-Path $jobDirectory 'nas-launched'),'launching',$utf8)
             if (Test-Path -LiteralPath $cancelFile) { Finish 'cancelled' '已取消，未启动 NAS 压缩任务。'; exit 0 }

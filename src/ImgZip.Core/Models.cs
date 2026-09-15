@@ -27,6 +27,8 @@ public sealed record AppConfig
     public int PcConcurrency { get; init; }
     /// <summary>单个 NAS 任务内部的引擎并发作业数；默认 2，最多 4。</summary>
     public int NasConcurrency { get; init; } = 2;
+    /// <summary>文件夹任务完成后是否复制未参与压缩的普通文件。</summary>
+    public bool CopySkippedFiles { get; init; }
     public AppConfig Normalize() => this with
     {
         Server = (Server ?? "").Trim(), User = (User ?? "").Trim(), NasIp = (NasIp ?? "").Trim(),
@@ -57,6 +59,7 @@ public sealed record CompressionOptions
     public bool Lossless { get; init; }
     public bool NoUpscale { get; init; } = true;
     public bool Recurse { get; init; }
+    public bool CopySkippedFiles { get; init; }
     public bool DryRun { get; init; }
     public static CompressionOptions ForPreset(string name, CompressionOptions previous) => name switch
     {
@@ -105,6 +108,11 @@ public sealed record WorkerEvent
     public int Succeeded { get; init; }
     public int Failed { get; init; }
     public int Skipped { get; init; }
+    public int CopyTotal { get; init; }
+    public int CopyCompleted { get; init; }
+    public int Copied { get; init; }
+    public int CopyFailed { get; init; }
+    public long CopiedBytes { get; init; }
     public long BeforeBytes { get; init; }
     public long AfterBytes { get; init; }
     public string Path { get; init; } = "";
@@ -120,9 +128,10 @@ public sealed record WorkerEvent
     {
         var item = Wire.Decode<WorkerEvent>(json);
         if (item.Version != 1 || item.JobId != jobId) throw new InvalidDataException("执行层事件版本或任务标识不匹配。");
-        if (item.Type is not ("phase" or "manifest" or "file" or "finished" or "probe" or "resolved" or "error" or "cancelRequested")) throw new InvalidDataException("执行层返回未知事件。");
+        if (item.Type is not ("phase" or "manifest" or "file" or "copy" or "finished" or "probe" or "resolved" or "error" or "cancelRequested")) throw new InvalidDataException("执行层返回未知事件。");
         if (item.Completed < 0 || item.Total < 0 || item.Completed > item.Total || item.BeforeBytes < 0 || item.AfterBytes < 0) throw new InvalidDataException("执行层返回无效统计。");
         if (item.Succeeded < 0 || item.Failed < 0 || item.Skipped < 0 || (long)item.Succeeded + item.Failed > item.Completed) throw new InvalidDataException("执行层返回无效结果计数。");
+        if (item.CopyTotal < 0 || item.CopyCompleted < 0 || item.CopyCompleted > item.CopyTotal || item.Copied < 0 || item.CopyFailed < 0 || item.CopiedBytes < 0 || (long)item.Copied + item.CopyFailed > item.CopyCompleted) throw new InvalidDataException("执行层返回无效复制计数。");
         if (item.Type == "finished" && item.State is not ("succeeded" or "partial" or "failed" or "cancelled" or "unknown" or "dryRun" or "empty")) throw new InvalidDataException("执行层返回无效终态。");
         return item;
     }
@@ -139,8 +148,10 @@ public static class Display
     };
     public static string Summary(WorkerEvent result)
     {
-        if (result.DryRun) return $"预演完成：{result.Total} 张图片，跳过 {result.Skipped} 项。未生成文件。";
+        if (result.DryRun) return $"预演完成：{result.Total} 张图片，其他文件 {result.CopyTotal} 项，跳过 {result.Skipped} 项。未生成文件。";
         var counts = $"成功 {result.Succeeded} · 失败 {result.Failed} · 跳过 {result.Skipped}";
+        if (result.CopyTotal > 0) counts += $" · 其他文件 {result.Copied}/{result.CopyTotal}";
+        if (result.CopyFailed > 0) counts += $" · 复制失败 {result.CopyFailed}";
         if (result.BeforeBytes <= 0) return counts;
         var percent = (1 - result.AfterBytes / (double)result.BeforeBytes) * 100;
         return $"{counts}\n成功项：{Bytes(result.BeforeBytes)} → {Bytes(result.AfterBytes)}（{(percent >= 0 ? "节省" : "增加")} {Math.Abs(percent):N1}%）";

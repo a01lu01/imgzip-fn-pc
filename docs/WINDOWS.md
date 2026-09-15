@@ -1,6 +1,6 @@
 # ImgZip A · Windows 11 x64
 
-应用采用 WinUI 3 + C# 与 A「轻量工具窗」。**0.3.5** 修复 NAS 任务误用 PC 核数造成的并发进程风暴，并对 NAS 并发做客户端、worker 和内存三层夹取。是否由 OOM 导致本次 NAS 失联，仍需设备重启后以 `dmesg` / `journalctl` 和 `diagnostic.log` 确认；在真机复测前不要把稳定性修复表述为已经完成 NAS 验收。
+应用采用 WinUI 3 + C# 与 A「轻量工具窗」。**0.3.6** 在 0.3.5 NAS 并发加固基础上，新增文件夹其他文件复制归档。历史 OOM 因当前账号无权读取上一启动周期的 journal 未取得直接证据，但 20 张真机测试已验证 32 请求会被硬夹到 4，SSH 全程可用。
 
 ## 构建安装包
 
@@ -27,8 +27,8 @@ pwsh -NoProfile -File build/windows.ps1 -CompilerPath 'D:\Tools\Inno Setup 7\ISC
 脚本依次运行非 UI 测试、锁定模式还原、目录形式自包含发布、下载并校验 caesium-clt 1.4.0、检查引擎可启动、编译安装程序。版本取自 `Directory.Build.props`，当前产物路径：
 
 ```text
-artifacts/installer/ImgZip-0.3.5-win-x64-setup.exe
-artifacts/installer/ImgZip-0.3.5-win-x64-setup.exe.sha256
+artifacts/installer/ImgZip-0.3.6-win-x64-setup.exe
+artifacts/installer/ImgZip-0.3.6-win-x64-setup.exe.sha256
 artifacts/build/<本次构建ID>/publish/
 ```
 
@@ -41,7 +41,7 @@ dotnet publish src/ImgZip.App/ImgZip.App.csproj -c Release --no-restore -o artif
 
 上面两条不下载 caesium；完整发布请用 `build/windows.ps1`。不要额外传全局 `-r`：应用项目已固定 `win-x64`，额外参数会改变核心类库的跨平台锁定图。发布设置同时启用 `SelfContained` 和 `WindowsAppSDKSelfContained`，不裁剪、不合并单文件，依据 [微软自包含部署说明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/self-contained-deploy/deploy-self-contained-apps)。
 
-`.github/workflows/windows-installer.yml` 只接受 `workflow_dispatch`。源码推送后，用户可自行到 Actions → Build Windows installer → Run workflow，完成后下载 artifact。此工作流没有 push/PR 自动触发器，没有发布 Release 的权限。0.3.5 默认只提交源码，不创建 Release、不触发远程构建。
+`.github/workflows/windows-installer.yml` 只接受 `workflow_dispatch`。源码推送后，用户可自行到 Actions → Build Windows installer → Run workflow，完成后下载 artifact。此工作流没有 push/PR 自动触发器，没有发布 Release 的权限。0.3.6 默认只提交源码，不创建 Release、不触发远程构建。
 
 ## 安装、升级与卸载
 
@@ -61,6 +61,8 @@ dotnet publish src/ImgZip.App/ImgZip.App.csproj -c Release --no-restore -o artif
 应用按用户保持单实例。再次从右键启动会把来源交给现有窗口的草稿区；运行中也可添加来源、选择预设和引擎。每次提交保存独立的参数快照，后续草稿修改不影响已提交任务；重复来源不会重复入队。
 
 默认收藏 JPEG（q90、长边 4000）、不递归、不放大小图。收藏 WebP 为 q90/4000；分享 WebP 为 q80/2560。高级设置支持质量、格式、缩放、目标字节数、线程、无损、不放大、递归和预演。无损禁用质量及目标体积，不缩放时不传尺寸参数。PC 侧线程按组批调用引擎；NAS 侧使用独立的“NAS 并发作业数”（默认 2，可调 1–4），并夹取到 `min(设置值, NAS 核数, 4)`，不会继承 PC 的 32/64 核配置。
+
+“复制其他文件”位于“包含子文件夹”前，只对单个文件夹来源启用。开启后，普通非图片文件会在压缩完成后复制到同一输出目录；递归开关同时控制其他文件的目录范围。该选项包含隐藏文件和 `Thumbs.db`，不复制符号链接或空目录；偏好保存在 `copySkippedFiles`。
 
 多任务：PC 任务并发上限取自设置的“PC 并行任务数”（0 = 自动 = CPU 核数，可调 1–64）；NAS 任务至多一个，但可与 PC 任务并行。已启动但状态未知的任务继续占用对应名额，确认结束后才释放。主界面底部逐条显示进度/当前文件，可取消、重新检查、打开输出与查看失败详情；成功的任务自动移出列表，失败/取消/待确认保留。排队任务可“移除”，移除会终止等待，不会在其他任务结束后偷偷启动。
 

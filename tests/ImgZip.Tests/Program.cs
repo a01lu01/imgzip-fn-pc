@@ -44,6 +44,18 @@ await Test("config import, defaults, atomic save and theme persistence", async (
     Check(!Directory.EnumerateFiles(store.DirectoryPath, "*.tmp").Any(), "Temporary configuration leaked");
     Check(Wire.Decode<AppConfig>("""{"theme":"invalid"}""").Normalize().Theme == "system", "Invalid theme not normalized");
 });
+await Test("copy skipped files preference persists in config", async () =>
+{
+    var store = new ConfigStore(Path.Combine(scratch, "copy-preference"));
+    Directory.CreateDirectory(store.DirectoryPath);
+    await File.WriteAllTextAsync(store.FilePath, """{"copySkippedFiles":true}""");
+    var loaded = await store.LoadAsync();
+    var property = typeof(AppConfig).GetProperty("CopySkippedFiles");
+    Check(property is not null, "CopySkippedFiles config property is missing");
+    Check((bool)property!.GetValue(loaded)!, "CopySkippedFiles preference was not loaded");
+    await store.SaveAsync(loaded);
+    Check((bool)property.GetValue(await store.LoadAsync())!, "CopySkippedFiles preference was not persisted");
+});
 await Test("presets, parameter exclusivity and validation", () =>
 {
     var custom = new CompressionOptions { Lossless = true, MaxSize = 100, NoUpscale = false };
@@ -182,6 +194,62 @@ await Test("NAS concurrency setting does not change PC task thread allocation", 
     await Task.WhenAll(runs);
 });
 
+await Test("copy preference applies to folders but not file sources", async () =>
+{
+    var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded" };
+    var store = new ConfigStore(Path.Combine(scratch, "copy-source"));
+    await store.SaveAsync(new AppConfig { CopySkippedFiles = true });
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    var folder = Path.Combine(scratch, "copy-source-folder");
+    Directory.CreateDirectory(folder);
+    await vm.SetSourcesAsync([folder]);
+    var folderRun = vm.StartAsync();
+    await WaitUntilAsync(() => mock.RunRequests.Count == 1, "Folder task did not start");
+    Check(mock.RunRequests[0].Options.CopySkippedFiles, "Folder task did not apply copy preference");
+    mock.ReleaseRuns();
+    await folderRun;
+
+    var replacement = Path.Combine(scratch, "copy-source-image.jpg");
+    await File.WriteAllTextAsync(replacement, "image");
+    await vm.SetSourcesAsync([replacement]);
+    var fileRun = vm.StartAsync();
+    await WaitUntilAsync(() => mock.RunRequests.Count == 2, "File task did not start");
+    Check(!mock.RunRequests[1].Options.CopySkippedFiles, "File task incorrectly enabled folder-only copy option");
+    mock.ReleaseRuns();
+    await fileRun;
+});
+
+await Test("saving connection settings preserves copy preference", async () =>
+{
+    var mock = new FakeWorker();
+    var store = new ConfigStore(Path.Combine(scratch, "copy-connection"));
+    await store.SaveAsync(new AppConfig { CopySkippedFiles = true });
+    var vm = new MainViewModel(mock, store, "unused");
+    await vm.InitializeAsync();
+    await vm.SaveConnectionAsync(new AppConfig { Server = "nas.local", User = "nas", KeyPath = "C:\\key", NasHosts = ["nas.local"] });
+    Check((await store.LoadAsync()).CopySkippedFiles, "Saving connection settings reset copy preference");
+});
+
+await Test("copy events update task progress and failures", () =>
+{
+    var task = new CompressionTaskViewModel(new() { Engine = "pc", Sources = ["folder"] }, 0);
+    task.Apply(new WorkerEvent { JobId = task.JobId, Type = "manifest", Total = 1, CopyTotal = 2 });
+    task.Apply(new WorkerEvent { JobId = task.JobId, Type = "copy", State = "copied", CopyTotal = 2, CopyCompleted = 1, Copied = 1, CopiedBytes = 1024, Path = "a.mov" });
+    var property = typeof(CompressionTaskViewModel).GetProperty("CopyProgressText");
+    Check(property is not null, "CopyProgressText property is missing");
+    Check(((string)property!.GetValue(task)!).Contains("1 / 2") && ((string)property.GetValue(task)!).Contains("1.0 KB"), "Copy progress text incorrect");
+    task.Apply(new WorkerEvent { JobId = task.JobId, Type = "copy", State = "failed", CopyTotal = 2, CopyCompleted = 2, Copied = 1, CopyFailed = 1, CopiedBytes = 1024, Path = "b.mov", Message = "locked" });
+    Check(task.HasFailures && task.Failures.Single().Contains("复制失败") && task.Failures.Single().Contains("locked"), "Copy failure was not surfaced");
+    return Task.CompletedTask;
+});
+await Test("dry run summary reports planned copied files", () =>
+{
+    var summary = Display.Summary(new WorkerEvent { Type = "finished", State = "dryRun", DryRun = true, Total = 2, CopyTotal = 3, Skipped = 3 });
+    Check(summary.Contains("其他文件 3"), summary);
+    return Task.CompletedTask;
+});
+
 await Test("successful task record is cleaned up and removed from the list", async () =>
 {
     var mock = new FakeWorker { RunState = "succeeded" };
@@ -238,6 +306,54 @@ await Test("real PowerShell worker: dry run creates no output or engine result",
     Check(!Directory.Exists(source + "_compressed"), "Dry run created output");
     events = await Execute(Request([source], new() { DryRun = true, Recurse = true }));
     Check(events.Last().Total == 2, "Recursive manifest failed");
+});
+await Test("real PowerShell worker: copies skipped regular files after compression", async () =>
+{
+    var source = await Folder("copy-other", "good.jpg", "note.txt", "sub/nested.txt");
+    var options = Wire.Decode<CompressionOptions>("""{"format":"jpeg","quality":90,"resize":"none","pixels":0,"copySkippedFiles":true}""");
+    var events = await Execute(Request([source], options));
+    var last = events.Last();
+    Check(last.State == "succeeded", Wire.Encode(last));
+    Check(File.Exists(Path.Combine(last.Output, "note.txt")), "Skipped file was not copied");
+    Check(!File.Exists(Path.Combine(last.Output, "sub/nested.txt")), "Non-recursive copy entered a subdirectory");
+});
+await Test("real PowerShell worker: recursive copy preserves directories and reports progress", async () =>
+{
+    var source = await Folder("copy-recursive", "good.jpg", "note.txt", "sub/nested.txt");
+    var events = await Execute(Request([source], new() { CopySkippedFiles = true, Recurse = true, Format = "jpeg", Resize = "none", Pixels = 0 }));
+    var last = events.Last();
+    var copies = events.Where(e => e.Type == "copy").ToArray();
+    Check(last.State == "succeeded" && copies.Length == 2, Wire.Encode(last));
+    Check(File.Exists(Path.Combine(last.Output, "note.txt")) && File.Exists(Path.Combine(last.Output, "sub/nested.txt")), "Recursive copied files missing");
+    var total = typeof(WorkerEvent).GetProperty("CopyTotal");
+    var completed = typeof(WorkerEvent).GetProperty("CopyCompleted");
+    var copied = typeof(WorkerEvent).GetProperty("Copied");
+    var failed = typeof(WorkerEvent).GetProperty("CopyFailed");
+    Check(total is not null && completed is not null && copied is not null && failed is not null, "Copy progress protocol fields are missing");
+    Check((int)total!.GetValue(last)! == 2 && (int)completed!.GetValue(last)! == 2 && (int)copied!.GetValue(last)! == 2 && (int)failed!.GetValue(last)! == 0, "Copy progress counters incorrect");
+});
+await Test("real PowerShell worker: copy-only folder preserves ordinary hidden files", async () =>
+{
+    var source = await Folder("copy-only", "Thumbs.db", ".hidden.txt", "video.mov");
+    var events = await Execute(Request([source], new() { CopySkippedFiles = true }));
+    var last = events.Last();
+    Check(last.State == "succeeded" && last.Total == 0 && last.CopyTotal == 3 && last.Copied == 3, Wire.Encode(last));
+    Check(File.Exists(Path.Combine(last.Output, "Thumbs.db")) && File.Exists(Path.Combine(last.Output, ".hidden.txt")) && File.Exists(Path.Combine(last.Output, "video.mov")), "Copy-only output incomplete");
+});
+await Test("real PowerShell worker: copy failure makes a partial archive", async () =>
+{
+    if (!OperatingSystem.IsWindows()) return;
+    var source = await Folder("copy-fail", "good.jpg", "open.raw", "locked.raw");
+    var openSource = Path.Combine(source, "open.raw");
+    var expectedTime = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+    File.SetLastWriteTimeUtc(openSource, expectedTime);
+    using var locked = new FileStream(Path.Combine(source, "locked.raw"), FileMode.Open, FileAccess.Read, FileShare.None);
+    var events = await Execute(Request([source], new() { CopySkippedFiles = true }));
+    var last = events.Last();
+    Check(last.State == "partial" && last.CopyTotal == 2 && last.Copied == 1 && last.CopyFailed == 1, Wire.Encode(last));
+    Check(File.Exists(Path.Combine(last.Output, "open.raw")), "Successful copy was removed");
+    Check(File.GetLastWriteTimeUtc(Path.Combine(last.Output, "open.raw")) == expectedTime, "Copied timestamp was not preserved");
+    Check(events.Any(e => e.Type == "copy" && e.State == "failed" && e.Path.EndsWith("locked.raw")), "Copy failure event missing");
 });
 await Test("real worker: Unicode, spaces, special characters and same-format handling", async () =>
 {

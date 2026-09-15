@@ -30,7 +30,8 @@ public sealed partial class SettingsDialog : ContentDialog
             Server = ServerField.Text, User = UserField.Text, Port = (int)PortField.Value, KeyPath = KeyField.Text,
             NasIp = IpField.Text, NasHosts = HostsField.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), Theme = model.Config.Theme,
             PcConcurrency = (int)ConcurrencyField.Value,
-            NasConcurrency = (int)NasConcurrencyField.Value
+            NasConcurrency = (int)NasConcurrencyField.Value,
+            CopySkippedFiles = model.Config.CopySkippedFiles
         }.Normalize();
     }
     private void Info(string message, InfoBarSeverity severity)

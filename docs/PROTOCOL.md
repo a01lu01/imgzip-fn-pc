@@ -5,7 +5,7 @@
 每次请求启动一个 PowerShell 子进程，标准输入发送一行 UTF-8 JSON 后关闭输入。标准输出仅为逐行 JSON 事件；标准错误为诊断。Windows PowerShell 5.1 脚本使用 UTF-8 BOM 以正确读取中文代码文字，通信正文为 UTF-8。命令行参数通过 .NET ArgumentList/Windows 引号编码传递。
 
 ```json
-{"version":1,"operation":"run","jobId":"11111111111111111111111111111111","engine":"pc","sources":["D:\\照片\\旅行"],"options":{"preset":"archive-jpeg","format":"jpeg","quality":90,"resize":"long","pixels":4000,"maxSize":0,"threads":4,"lossless":false,"noUpscale":true,"recurse":false,"dryRun":true},"config":{"server":"","user":"","nasHosts":[],"nasIp":"","keyPath":"","port":22,"theme":"system","pcConcurrency":0,"nasConcurrency":2},"enginePath":"C:\\Users\\user\\AppData\\Local\\Programs\\ImgZip\\bin\\caesiumclt.exe","sshPath":"ssh","stateDirectory":"C:\\Users\\user\\AppData\\Local\\ImgZip"}
+{"version":1,"operation":"run","jobId":"11111111111111111111111111111111","engine":"pc","sources":["D:\\照片\\旅行"],"options":{"preset":"archive-jpeg","format":"jpeg","quality":90,"resize":"long","pixels":4000,"maxSize":0,"threads":4,"lossless":false,"noUpscale":true,"recurse":false,"copySkippedFiles":false,"dryRun":true},"config":{"server":"","user":"","nasHosts":[],"nasIp":"","keyPath":"","port":22,"theme":"system","pcConcurrency":0,"nasConcurrency":2,"copySkippedFiles":false},"enginePath":"C:\\Users\\user\\AppData\\Local\\Programs\\ImgZip\\bin\\caesiumclt.exe","sshPath":"ssh","stateDirectory":"C:\\Users\\user\\AppData\\Local\\ImgZip"}
 ```
 
 `jobId` 为 32 位小写十六进制 GUID，恢复/取消必须复用原请求的 ID、引擎与配置。`sshPath` 仅供测试注入替身，应用固定使用 `ssh`。接口不是网络服务或不可信请求沙箱。`options.threads` 表示该任务请求的引擎并发作业数；NAS worker 仍会夹取到 `min(请求值, nproc, 4)`，并按可用内存进一步降低新增并发。
@@ -14,17 +14,19 @@
 | --- | --- |
 | probe | 探测 PC 引擎或 SSH/远程引擎与工具；不执行任务 |
 | resolve | Windows 源校验、映射盘/UNC → NAS 路径解析 |
-| run | 建立文件清单、规划新输出目录及冲突文件名；PC 组批调用，NAS 并发单文件作业，统一逐文件事件 |
+| run | 建立图片与其他文件清单、规划新输出目录及冲突文件名；PC 组批调用，NAS 并发单文件作业，统一逐文件/复制事件 |
 | cancel | 独立控制进程请求同 ID 任务停止；请求接受不等于停止确认 |
 | inspect | 读取同 ID 的持久事件，无法确认终态则返回 unknown |
 
-事件均包含 `version/jobId/type`。`phase` 表示准备阶段；`manifest` 给出本次清单总数及输出位置；`file` 给出 `index/path/state` 和累计完成/成功/失败/跳过数。`file.beforeBytes/afterBytes` 是该成功文件的配对字节数，失败文件为 0。`finished` 的字节数仅汇总成功文件。`output` 为实际执行端目录，NAS 可另提供经共享映射得到的 `openOutput`。
+事件均包含 `version/jobId/type`。`phase` 表示准备阶段；`manifest` 给出图片总数、其他文件复制数和输出位置；`file` 给出图片进度；`copy` 给出其他文件的 `copied/failed` 进度。累计复制状态使用 `copyTotal/copyCompleted/copied/copyFailed/copiedBytes`。`file.beforeBytes/afterBytes` 是成功图片的配对字节数；`copy.copiedBytes` 只汇总复制成功的其他文件。`output` 为实际执行端目录，NAS 可另提供经共享映射得到的 `openOutput`。
 
 `finished.state` 为 `succeeded`、`partial`、`failed`、`cancelled`、`dryRun`、`empty` 或 `unknown`。`unknown` 是观察结果，不能释放该任务的执行名额或宣称远端停止。`cancelRequested` 只确认取消请求已送达。`probe` 使用 `pcAvailable` 或 `connected/nasAvailable` 分别表达状态；NAS 探测同时返回 `nasCores` 与 `nasMemoryMb`，应用用前者夹取 NAS 并发设置。PC 的可打开路径取 `output`，NAS 取映射后的 `openOutput`。
 
 NAS 字符串在内部事件中用 `path64/output64/message64` 编码，PowerShell 解码后再交给 C#。SSH 只执行固定 `bash -s`；所有动态来源、共享名、参数经 Base64 赋值传入固定脚本，不作为 Bash 源码插值。路径清单使用 NUL 分隔枚举、引号包裹数组参数。
 
 NAS 任务启动到独立 setsid 会话，SSH 连接只读取任务日志。取消校验远端 `/proc` 启动时间和会话 ID，不因 PID 重用误杀其他任务；没有确认日志则返回 unknown。PC 取消通过用户数据目录中的任务取消标志，由运行进程终止自己的引擎子进程树并确认退出。
+
+当 `copySkippedFiles=true` 且来源是单个文件夹时，普通非图片文件会在图片压缩后复制。PC 与 NAS 均跳过符号链接/重解析点，不复制空目录；递归模式保留相对目录结构。文件内容和时间/基础属性通过临时文件完成后原子发布，复制失败进入同一任务的失败详情并影响 `partial/failed` 状态。
 
 NAS worker 在创建输出目录后记录 `requested / nas_cores / effective / cap`，每次启动子任务前记录当前并发数与 `MemAvailable`。低于 1.5 GB 时最多新增 1 个，低于 3 GB 时最多新增 2 个；引擎通过 `nice -n 10` 启动，避免压缩满载时 SSH/SMB 失去响应。
 

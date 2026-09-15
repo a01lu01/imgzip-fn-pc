@@ -50,6 +50,9 @@ public partial class CompressionTaskViewModel : ObservableObject
     [ObservableProperty] private string resultSummary = "排队等待执行";
     [ObservableProperty] private bool checking;
     [ObservableProperty] private string concurrencyText = "";
+    [ObservableProperty] private int copyTotal;
+    [ObservableProperty] private int copyCompleted;
+    [ObservableProperty] private long copiedBytes;
 
     public bool IsQueued => State == "queued";
     public bool CanResume => State == "awaitingResume";
@@ -65,6 +68,8 @@ public partial class CompressionTaskViewModel : ObservableObject
     public bool IsIndeterminate => State == "preparing" || (IsRunning && Total == 0);
     public double Progress => Total == 0 ? 0 : 100d * Completed / Total;
     public string ProgressText => Total == 0 ? "" : $"{Completed} / {Total}";
+    public bool HasCopyProgress => CopyTotal > 0;
+    public string CopyProgressText => CopyTotal == 0 ? "" : $"其他文件 {CopyCompleted} / {CopyTotal} · {Display.Bytes(CopiedBytes)}";
     public string StateTitle => State switch
     {
         "queued" => "排队中", "awaitingResume" => "等待手动继续", "preparing" => "正在准备…", "running" => "正在压缩…", "cancelling" => "正在取消…",
@@ -75,8 +80,8 @@ public partial class CompressionTaskViewModel : ObservableObject
     protected override void OnPropertyChanged(PropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
-        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(Checking))
-            foreach (var name in new[] { nameof(IsQueued), nameof(CanResume), nameof(CanRemove), nameof(IsRunning), nameof(IsUnknown), nameof(IsTerminal), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(IsIndeterminate), nameof(Progress), nameof(ProgressText), nameof(StateTitle) })
+        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(Checking) or nameof(CopyTotal) or nameof(CopyCompleted) or nameof(CopiedBytes))
+            foreach (var name in new[] { nameof(IsQueued), nameof(CanResume), nameof(CanRemove), nameof(IsRunning), nameof(IsUnknown), nameof(IsTerminal), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(IsIndeterminate), nameof(Progress), nameof(ProgressText), nameof(StateTitle), nameof(HasCopyProgress), nameof(CopyProgressText) })
                 base.OnPropertyChanged(new PropertyChangedEventArgs(name));
         if (e.PropertyName == nameof(OpenOutputPath)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(CanOpenOutput)));
         if (e.PropertyName == nameof(Message)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(HasMessage)));
@@ -95,9 +100,10 @@ public partial class CompressionTaskViewModel : ObservableObject
                     resourceNote = e.Message;
             }
         }
-        if (e.Type is "manifest" or "file")
+        if (e.Type is "manifest" or "file" or "copy")
         {
             Total = e.Total; Completed = e.Completed;
+            CopyTotal = e.CopyTotal; CopyCompleted = e.CopyCompleted; CopiedBytes = e.CopiedBytes;
             if (!string.IsNullOrEmpty(e.Output)) OutputPath = e.Output;
             if (State != "cancelling") State = "running";
         }
@@ -110,10 +116,20 @@ public partial class CompressionTaskViewModel : ObservableObject
                 if (!Failures.Contains(error)) Failures.Add(error);
             }
         }
+        if (e.Type == "copy")
+        {
+            CurrentFile = e.Path;
+            if (e.State == "failed")
+            {
+                var error = $"{e.Path}\n复制失败：{e.Message}";
+                if (!Failures.Contains(error)) Failures.Add(error);
+            }
+        }
         if (e.Type == "finished")
         {
             State = e.State == "empty" ? "emptyResult" : e.State;
             Total = e.Total; Completed = e.Completed;
+            CopyTotal = e.CopyTotal; CopyCompleted = e.CopyCompleted; CopiedBytes = e.CopiedBytes;
             if (!string.IsNullOrEmpty(e.Output)) OutputPath = e.Output;
             OpenOutputPath = Request.Engine == "pc" ? e.Output : e.OpenOutput;
             ResultSummary = Display.Summary(e);

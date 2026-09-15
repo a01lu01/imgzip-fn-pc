@@ -41,6 +41,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool lossless;
     [ObservableProperty] private bool noUpscale = true;
     [ObservableProperty] private bool recurse;
+    [ObservableProperty] private bool copySkippedFiles;
+    [ObservableProperty] private bool folderSource;
     [ObservableProperty] private bool dryRun;
     [ObservableProperty] private bool pcAvailable;
     [ObservableProperty] private int nasCores;
@@ -79,6 +81,7 @@ public partial class MainViewModel : ObservableObject
     public bool IsIndeterminate => State == "preparing" || (IsRunning && Total == 0);
     public bool CanSetQuality => !Lossless;
     public bool CanResize => ResizeIndex != 0;
+    public bool CanCopySkippedFiles => CanEdit && FolderSource;
     public bool NasEligible => !string.IsNullOrWhiteSpace(Config.Server) && sources.Length > 0 && sources.All(p => p.StartsWith(@"\\") || LooksLikeMappedDrive(p));
     public bool JpegSelected => Preset == "archive-jpeg";
     public bool WebpSelected => Preset == "archive-webp";
@@ -137,17 +140,17 @@ public partial class MainViewModel : ObservableObject
         {
             if (Preset != "custom") Preset = "custom";
         }
-        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(DryRun) or nameof(Lossless) or nameof(ResizeIndex) or nameof(EngineIndex) or nameof(Config) or nameof(PcAvailable) or nameof(NasCores) or nameof(NasMemoryMb) or nameof(Checking) or nameof(Message) or nameof(Preset) or nameof(Quality) or nameof(Pixels) or nameof(NoUpscale)) NotifyDerived();
+        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(DryRun) or nameof(Lossless) or nameof(ResizeIndex) or nameof(EngineIndex) or nameof(Config) or nameof(PcAvailable) or nameof(NasCores) or nameof(NasMemoryMb) or nameof(Checking) or nameof(Message) or nameof(Preset) or nameof(Quality) or nameof(Pixels) or nameof(NoUpscale) or nameof(CopySkippedFiles) or nameof(FolderSource)) NotifyDerived();
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
     private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks)); }
 
     public async Task InitializeAsync()
     {
-        try { Config = await store.LoadAsync(); }
+        try { Config = await store.LoadAsync(); CopySkippedFiles = Config.CopySkippedFiles; }
         catch (Exception ex) { hasConfigurationError = true; Message = $"配置无法读取，原文件已保留。请在设置中导入或保存有效配置：{ex.Message}"; }
         await RecoverTasksAsync();
         tasksReady = true; NotifyDerived();
@@ -168,6 +171,7 @@ public partial class MainViewModel : ObservableObject
         if (paths.Length > 1 && (paths.Any(Directory.Exists) || paths.Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1))
         { Message = "请选择一个文件夹，或同一目录内的多张图片。"; return; }
         sources = paths;
+        FolderSource = paths.Length == 1 && Directory.Exists(paths[0]);
         SourceTitle = paths.Length > 1 ? $"已选择 {paths.Length} 张图片" : Path.GetFileName(paths[0].TrimEnd(Path.DirectorySeparatorChar));
         SourcePath = string.Join("; ", paths); SourceSummary = "开始前将统计当前处理范围";
         OutputPath = "源目录_compressed（已存在时自动编号）";
@@ -178,7 +182,7 @@ public partial class MainViewModel : ObservableObject
     }
     public void ClearSources()
     {
-        sources = []; State = "empty"; SourceTitle = "将图片或文件夹拖到这里"; SourcePath = "支持 JPG、PNG、WebP、GIF";
+        sources = []; FolderSource = false; State = "empty"; SourceTitle = "将图片或文件夹拖到这里"; SourcePath = "支持 JPG、PNG、WebP、GIF";
         SourceSummary = "添加来源后开始"; OutputPath = "选择来源后自动生成"; Message = ""; NotifyDerived();
     }
     private WorkerRequest Request(string operation, string? engine = null) => new()
@@ -223,10 +227,17 @@ public partial class MainViewModel : ObservableObject
         if (hasConfigurationError) { Message = "主题已临时生效。请先在设置中修复配置，避免覆盖无法读取的原文件。"; return; }
         try { await store.SaveAsync(Config); } catch (Exception ex) { Message = $"主题无法保存：{ex.Message}"; }
     }
+    public async Task SetCopySkippedFilesAsync(bool value)
+    {
+        CopySkippedFiles = value;
+        Config = Config with { CopySkippedFiles = value };
+        if (hasConfigurationError) { Message = "选项已临时生效。请先在设置中修复配置，避免覆盖无法读取的原文件。"; return; }
+        try { await store.SaveAsync(Config); } catch (Exception ex) { Message = $"复制其他文件偏好无法保存：{ex.Message}"; }
+    }
     public async Task SaveConnectionAsync(AppConfig draft)
     {
         if (!string.IsNullOrWhiteSpace(draft.Server) && draft.ValidateConnection() is { } validation) throw new ArgumentException(validation);
-        var updated = draft.Normalize() with { Theme = Config.Theme };
+        var updated = draft.Normalize() with { Theme = Config.Theme, CopySkippedFiles = Config.CopySkippedFiles };
         if (hasConfigurationError && File.Exists(store.FilePath)) File.Copy(store.FilePath, store.FilePath + $".invalid-{DateTime.Now:yyyyMMddHHmmss}", false);
         await store.SaveAsync(updated); Config = updated; hasConfigurationError = false;
         await ProbeSelectedAsync();
@@ -252,7 +263,8 @@ public partial class MainViewModel : ObservableObject
         {
             Preset = Preset, Format = formats[FormatIndex], Resize = resizes[ResizeIndex], Quality = Lossless ? 90 : Integer(Quality, "质量"),
             Pixels = ResizeIndex == 0 ? 0 : Integer(Pixels, "尺寸"), MaxSize = Lossless ? 0 : (long)MaxSize,
-            Threads = Integer(Threads, "线程数"), NoUpscale = ResizeIndex != 0 && NoUpscale, Lossless = Lossless, Recurse = Recurse, DryRun = DryRun
+            Threads = Integer(Threads, "线程数"), NoUpscale = ResizeIndex != 0 && NoUpscale, Lossless = Lossless, Recurse = Recurse,
+            CopySkippedFiles = CopySkippedFiles && FolderSource, DryRun = DryRun
         };
     }
 }

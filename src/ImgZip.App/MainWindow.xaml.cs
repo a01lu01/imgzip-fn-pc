@@ -174,6 +174,8 @@ public sealed partial class MainWindow : Window
             await ViewModel.SetSourcesAsync((await e.DataView.GetStorageItemsAsync()).Select(item => item.Path));
     });
     private void Clear_Click(object sender, RoutedEventArgs e) => ViewModel.ClearSources();
+    private async void CopySkippedFiles_Click(object sender, RoutedEventArgs e) =>
+        await Safe(() => ViewModel.SetCopySkippedFilesAsync((sender as CheckBox)?.IsChecked == true));
     private void Preset_Click(object sender, RoutedEventArgs e) => ViewModel.SelectPreset((string)((FrameworkElement)sender).Tag);
     private async void Start_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.StartAsync);
     private async void Cancel_Click(object sender, RoutedEventArgs e) => await Safe(ViewModel.CancelAsync);
