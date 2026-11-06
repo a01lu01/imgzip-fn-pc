@@ -90,6 +90,8 @@ NAS 侧需要 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk
 - [检查与验收](docs/VALIDATION.md)
 - [界面设计](docs/DESIGN-A.md)
 - [0.3.6 其他文件复制](docs/FEATURES-0.3.6-copy-other-files.md)
+- [引擎默认选择（已记录，未实施）](docs/FEATURES-engine-mode-selection.md)
+- [一窗一任务与新建任务置前（已记录，未实施）](docs/FEATURES-one-task-per-window.md)
 - [0.3.5 NAS 并发事故与修复](docs/UI-ISSUES-0.3.5-nas-concurrency.md)
 - [0.3.4 修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)
 - 界面方案演示（HTML，本地打开）：[design-demo](design-demo/README.md)
