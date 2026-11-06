@@ -24,6 +24,8 @@ Thumbs.db
 # Native application build and local SDKs
 .tools/
 artifacts/
+__pycache__/
+*.pyc
 **/obj/
 **/bin/
 *.user
