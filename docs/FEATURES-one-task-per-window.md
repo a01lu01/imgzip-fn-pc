@@ -169,7 +169,7 @@ Explorer（前台） → 启动 ImgZip.exe 实例 B（B 获得前台权）
 2. 在 `tests/ImgZip.Tests` 补一条"旧配置缺字段 → 等同 auto"的用例。
 3. `build/test.ps1` 全绿后再进下一阶段。
 
-**验收**：43 组（+1）全过；`git diff` 只涉及 `Models.cs` 和测试。
+**验收**：**44 次执行**全过；`git diff` 只涉及 `Models.cs` 和测试。已完成，见提交 `e67eb5d`。
 
 **风险**：无。这一步可与引擎模式功能并行推进。
 
@@ -177,28 +177,144 @@ Explorer（前台） → 启动 ImgZip.exe 实例 B（B 获得前台权）
 
 **目标**：把应用级职责搬出 `MainViewModel`，但**仍只支持一个窗口**。
 
-改动点（从 [`MainViewModel.cs`](../src/ImgZip.Core/MainViewModel.cs) 与 [`MainViewModel.Tasks.cs`](../src/ImgZip.Core/MainViewModel.Tasks.cs) 搬走）：
+这一阶段拆成 1a / 1b / 1c 三步。理由见本节末尾的「为什么不能一步做完」——把「机械搬家」和「多窗口语义」混在同一步，测试失败时无法归因，也就失去了回退信号。
 
-| 成员 | 现状 | 新位置 |
+#### 1a：纯机械搬家
+
+| 成员 | 现位置 | 新位置 |
 | --- | --- | --- |
-| `taskGate`（[MainViewModel.cs:20](../src/ImgZip.Core/MainViewModel.cs)） | 窗口实例 | `TaskCoordinator` |
-| `taskIndex`（[:13](../src/ImgZip.Core/MainViewModel.cs)） | 窗口实例 | `TaskCoordinator` |
-| `taskStore`（[:19](../src/ImgZip.Core/MainViewModel.cs)） | 窗口实例 | `TaskCoordinator` |
-| `tasksReady`（[:21](../src/ImgZip.Core/MainViewModel.cs)） | 窗口实例 | `TaskCoordinator` |
-| `UpdateTasksAsync`（[Tasks.cs:6](../src/ImgZip.Core/MainViewModel.Tasks.cs)） | 私有方法 | `TaskCoordinator` |
-| `WaitForSlotAsync`（[Tasks.cs:122](../src/ImgZip.Core/MainViewModel.Tasks.cs)） | 私有方法 | `TaskCoordinator`，**逻辑一行不改** |
-| `RecoverTasksAsync`（[Tasks.cs:28](../src/ImgZip.Core/MainViewModel.Tasks.cs)） | 私有方法 | `TaskCoordinator` |
-| `ProbeSelectedAsync` 的 NAS 核数/内存缓存 | `MainViewModel` | `TaskCoordinator`（`NasCores` / `NasMemoryMb` 跨窗口共享） |
+| `taskIndex` | [MainViewModel.cs:13](../src/ImgZip.Core/MainViewModel.cs) | `TaskCoordinator` |
+| `taskGate` | [:20](../src/ImgZip.Core/MainViewModel.cs) | `TaskCoordinator`（与 `taskIndex` 同宿主，否则互斥失效） |
+| `taskStore` | [:19](../src/ImgZip.Core/MainViewModel.cs) | `TaskCoordinator` |
+| `UpdateTasksAsync` | [Tasks.cs:6](../src/ImgZip.Core/MainViewModel.Tasks.cs) | `TaskCoordinator` |
+| `Record` | [Tasks.cs:23](../src/ImgZip.Core/MainViewModel.Tasks.cs) | `TaskCoordinator` |
+| `RecoverTasksAsync` | [Tasks.cs:28](../src/ImgZip.Core/MainViewModel.Tasks.cs) | `TaskCoordinator` |
+| `WaitForSlotAsync` | [Tasks.cs:122](../src/ImgZip.Core/MainViewModel.Tasks.cs) | `TaskCoordinator`，**逻辑一行不改** |
+| `RunTaskAsync` / `ObserveAsync` / `HandleEventAsync` / `FailBeforeStartAsync` / `FinalizeTaskAsync` | [Tasks.cs:164-242](../src/ImgZip.Core/MainViewModel.Tasks.cs) | `TaskCoordinator` |
+| `NasCores` / `NasMemoryMb` | [MainViewModel.cs:48-49](../src/ImgZip.Core/MainViewModel.cs) | `TaskCoordinator`（`WaitForSlotAsync` 直接读，必须与限额同源） |
 
-**关键约束**：`WaitForSlotAsync` 里 `occupied` / `limit` / `olderQueued` 的计算逻辑**一个字都不改**。只是把数据源从实例字段换成协调者字段。这保证了并发语义不变，阶段 1 结束时所有既有测试应当**原样通过**。
+**必须留在 `MainViewModel` 的**（搬到协调者就是语义错误）：
 
-`MainViewModel` 保留：`Config`、`Sources`、草稿参数、`EngineIndex`、`EngineStatus`、`ProbeSelectedAsync`（探测结果写回协调者）、`SetThemeAsync` / `SetCopySkippedFilesAsync` / `SaveConnectionAsync`。
+| 成员 | 理由 |
+| --- | --- |
+| `primaryRequest`（[:14](../src/ImgZip.Core/MainViewModel.cs)） | 是「本窗口当前镜像哪个任务」的**路由键**。上移后 B 窗口提交会劫持 A 窗口的 `CancelAsync` / `InspectAsync` |
+| `Mirror` / `SetPrimary` / `PrimaryTask` | 镜像方法体留在窗口，判据上移到订阅关系 |
+| 全部草稿参数、`sources`、`BuildOptions` / `Request` | 快照边界（见下文「隐性耦合 ①」） |
+| `EngineStatus` / `EngineIndex` / `PcAvailable` / `NasEligible` | 探测的展示态，每窗口一套；`NasEligible` 还依赖本窗口 `sources` |
+| `probeGeneration`、`hasConfigurationError` | 窗口内的交互状态 |
 
-**测试策略**：为兼容现有 24 处 `new MainViewModel(...)` 调用，`MainViewModel` 构造函数保留一个内部便捷重载，在未显式传协调者时自建一个（单窗口等价）。这样这一步**不需要改任何测试**。
+**公开门面必须保留**（否则测试编译失败）：`Tasks`、`HasUnfinishedTasks`、`Apply`、`StartAsync`、`ResumeTaskAsync`、`CancelTaskAsync`、`InspectTaskAsync`、`CancelAllAndWaitAsync`、`CancelAsync` / `InspectAsync`。其中 `Tasks` 改成一行读穿即可让全部 `vm.Tasks` 原样编译：
 
-**验收**：43 组测试**不改一行**全过。这是阶段 1 唯一且最重要的验收标准——如果必须改测试才能过，说明拆分引入了行为变化，要回退重做。
+```csharp
+public ObservableCollection<CompressionTaskViewModel> Tasks => coordinator.Tasks;
+```
 
-**预计规模**：`TaskCoordinator.cs` 新增约 250 行，`MainViewModel.cs` 净减约 120 行，`MainViewModel.Tasks.cs` 净减约 200 行。
+**1a 验收**：**44 次执行、零测试修改**全部通过。
+
+#### 1b：补齐共享所需的机制（仍不引入单例）
+
+1a 只证明「搬家没搬坏」。这一步补多窗口真正需要的六件事，全部**不改变现有 44 次执行的行为**：
+
+1. `EnsureRecoveredAsync()` 单飞（`Task` 缓存在字段里 + gate 保护），替代每窗口各跑一次 `RecoverTasksAsync`。
+2. `Attach(sink, dispatch, tasksChanged, report)` 返回 `IDisposable`；`MainWindow.Closed` 里 `Detach()`（现有 [App.xaml.cs:53](../src/ImgZip.App/App.xaml.cs) 只 `broker.Dispose()`，多窗口下这行本身也是 bug）。
+3. 任务变更按 `JobId` 路由，而非广播。通知风暴见下文「隐性耦合 ④」。
+4. `TaskStore` 加内部 gate。**现状没有任何互斥**（`ConfigStore` 有 `SemaphoreSlim`，`TaskStore` 没有），共享后并发 `SaveAsync` / `DeleteAsync` 会撞同一路径。
+5. `UpdateConfigAsync(Func<AppConfig, AppConfig>)` 读-改-写，替代「各窗口持有 `Config` 副本、整份覆盖写盘」。
+6. `Config` 上移为协调者的权威副本，`MainViewModel.Config` 改为读穿。理由见下文「隐性耦合 ②」。
+
+**1b 验收**：44 次仍全过；新增 3 组「两个 `MainViewModel` 共享协调者」用例（PC 限额 / NAS 串行 / 关一窗不影响另一窗）。
+
+#### 1c：App 层真正持有单例
+
+`App.xaml.cs` 创建唯一 `TaskCoordinator`，`MainWindow` 构造注入。**既有 44 次不改。**
+
+#### 为什么不能一步做完
+
+阶段 1 的价值是证明「**搬家是纯机械的**」。1a 能干净地证明这一点。
+
+如果同时引入「多窗口共享协调者」，测试失败时会有两种可能原因：机械搬家出错，或产品语义变化。**无法归因**，回退重做就失去了意义。
+
+实测统计（用于判断哪一步动了什么）：
+
+- `new MainViewModel(` 全仓 **17 处**：`Program.cs` 8 处、`LifecycleTests.cs` 8 处、`MainWindow.xaml.cs:29` 1 处。
+- 测试执行数 **44 次**：`Program.cs` 29 组 + `LifecycleTests.cs` 14 组（[LifecycleTests.cs:49](../tests/ImgZip.Tests/LifecycleTests.cs) 的 `foreach` 展开出 2 组，故 15 次执行）。
+- 其中 **12 次**对以下五点有硬依赖，是 1a 的真正验收线：
+
+| # | 约束 | 违反后果 |
+| --- | --- | --- |
+| C1 | 构造函数签名逐字不变，协调者参数只能**追加在末尾** | `LifecycleTests.cs:19` 是位置参数调用 `(runtimeWorker, config, "fixture", dispatch, disk)`，中间插参会静默错绑 `FaultStore` |
+| C2 | `dispatch` 与 `taskStore` 必须原样透传给协调者 | 漏 `taskStore` → `LifecycleTests.cs:43` 的 `await disk.LaunchEntered.Task` **永久挂起**；漏 `dispatch` → `:202` 的幂等收尾断言失效 |
+| C3 | 镜像写入与 `Tasks.Remove` 在 `await` 返回前同步完成 | `Program.cs:286`、`LifecycleTests.cs:36,47,68,202` 共 5 处「await 后立刻断言列表为空」变成偶发失败 |
+| C4 | 默认路径下协调者必须是**实例级**，不能是 `static` | `LifecycleTests.cs:75,213` 在同一目录新建第二个 VM 并要求任务列表独立；共享后会重复登记 |
+| C5 | `Tasks` / `HasUnfinishedTasks` / `Effective*` / `CanEdit` 必须是读穿投影，不能是快照副本 | UI 显示的限额与 `WaitForSlotAsync` 实际使用的限额可能不是同一个数 |
+
+#### 隐性耦合（1a 必须逐条处理）
+
+以下是子代理分析确认的、**不是简单字段搬移**的地方。
+
+**① 快照边界在哪一刻——`SubmitAsync` 必须接收已构造好的 `WorkerRequest`**
+
+[`Request()`](../src/ImgZip.Core/MainViewModel.cs) 在提交时把 `sources.ToArray()` 与 `Config with { NasHosts = ... }` 拷贝进 `WorkerRequest`。[LifecycleTests.cs:148-161](../tests/ImgZip.Tests/LifecycleTests.cs) 随后改预设、改引擎、改 `Config`，再断言 captured 未受影响。
+
+若 `SubmitAsync` 接收草稿引用或「稍后自己去读」，快照点后移，这个用例必然失败。
+
+**② `Config` 归属是原计划的自相矛盾**
+
+原计划把 `EffectivePcConcurrency` / `EffectiveNasConcurrency` 划给协调者，却把 `Config` 留在窗口。但这两个属性 100% 由 `Config` 派生：
+
+- `EffectivePcConcurrency => Config.PcConcurrency ...`（[MainViewModel.cs:92](../src/ImgZip.Core/MainViewModel.cs)）
+- `EffectiveNasConcurrency => Math.Clamp(Config.NasConcurrency, 1, hardwareLimit)`（[:98](../src/ImgZip.Core/MainViewModel.cs)）
+
+而 `WaitForSlotAsync` 直接读这两者（[Tasks.cs:131,139](../src/ImgZip.Core/MainViewModel.Tasks.cs)）。**必须单一真相源**，否则会出现「UI 显示对、调度用错数」的假通过。
+
+**③ `dispatch` 没有新归属——最致命的一处**
+
+现状 `UpdateTasksAsync` 在构造时注入的 `dispatch` 上跑，保证所有生命周期转换都在 UI 线程、在 gate 内执行。抽走后：
+
+- 协调者是应用级单例，**不该持有任何窗口的 `DispatcherQueue`**。窗口关闭后 `TryEnqueue` 返回 `false` 且回调永不执行 → [Tasks.cs:16](../src/ImgZip.Core/MainViewModel.Tasks.cs) 的 `completion.TrySetResult()` 永不调用 → 所有 `await UpdateTasksAsync(...)` **永久挂起**。今天 `TryEnqueue` 的返回值被完全忽略，`WaitAsync()` 也没有 CancellationToken。
+- 但这在现有 44 次执行里**不会暴露**（全是单窗口、UI 线程不退出）。
+
+建议：`Action<Action>` 改为 `Func<Action, bool> tryDispatch`，失败时内联执行或让 TCS 带异常完成；签名改成每次调用传入目标窗口的 dispatch。
+
+**④ 通知风暴**
+
+`Mirror` 每个 worker 事件触发一次（每个文件一条 `file` 事件），每次 `NotifyDerived()` 发 **29 个**属性通知（[MainViewModel.cs:147](../src/ImgZip.Core/MainViewModel.cs)）。全局广播 N 窗口 = N×29/文件。必须按 `JobId` 收窄。
+
+另一面：[MainWindow.xaml.cs:37-41](../src/ImgZip.App/MainWindow.xaml.cs) 的 `PropertyChanged` 订阅者会直接改 XAML（`ApplyTheme` / `SyncEngineButtons`），跨线程通知会抛 `RPC_E_WRONG_THREAD`。**协调者在后台线程广播、各 VM 直接转 `NotifyDerived` 是错的**，必须先回到各自 dispatcher。
+
+**⑤ `RecoverTasksAsync` 不是「被调用多次」那么简单**
+
+N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
+
+1. **同一 `JobId` 复活出两个实例**（[Tasks.cs:47](../src/ImgZip.Core/MainViewModel.Tasks.cs) 索引被覆盖、列表多一张卡片），两个实例都会 `Apply` 同一批事件 → `FinalizeTaskAsync` 跑两次 → `LifecycleTests.cs:202` 的 `disk.Deletes == 1` 失败。
+2. **把「正在运行」的任务当成「待恢复」**。磁盘上 `queued → launching → running`，后开的窗口会读成 `awaitingResume` 并给出「继续」按钮 → **同一 JobId 可被二次派发**，真正的双执行。
+3. **`TaskStore` 无互斥**，并发 `File.Move(temp, path, true)` 与并发删除可能与 `launching` 写入交错，把 `finished` 记录「复活」成 `queued`。
+4. `recovery.Errors` 只落到第一个窗口的 `Message`，其他窗口看不到损坏记录提示。
+
+**⑥ `taskGate` 的线程语义会变，但互斥性不变**
+
+`SemaphoreSlim(1,1)` 不绑线程，跨窗口仍正确串行。但「在哪个线程上执行」会变：gate 内的 `Tasks.Insert(0, task)` / `Tasks.Remove` 是 `ObservableCollection` 变更，绑定到 `ItemsControl` 时跨线程会抛异常。另外 `WaitForSlotAsync` 的 `Task.Delay(150)` 轮询叠加后，启动延迟从「≤150ms」变成「≤150ms + 队列深度」。
+
+**⑦ 其他容易漏的**
+
+- `TryFocusDuplicate`（[Tasks.cs:96](../src/ImgZip.Core/MainViewModel.Tasks.cs)）的作用域会从「窗口内去重」变成「全局去重」。对「一窗一任务」模型这**可能是错误的产品行为**——用户可能就想两个窗口压同一个文件夹。
+- `probeGeneration` 只保护单窗口内的过期探测。多窗口时 A 的旧探测结果可覆盖协调者的 `NasCores`，B 的名额计算随之抖动。
+- `tasksReady → CanEdit` 有**时序漏洞**：共享后新窗口在自己 `Config` 还没加载时 `CanEdit` 就为 `true`，用户可立即点开始，`BuildOptions` 读到的是默认 `AppConfig`。建议拆成协调者的 `RecoveryCompleted` 与 VM 的本地 `initialized` 两个标志。
+- `CancelAllAndWaitAsync` 里「**先取消所有未派发的等待者，再取消运行中的任务**」这个顺序（[Tasks.cs:279](../src/ImgZip.Core/MainViewModel.Tasks.cs)）是防「取消一个 → 释放名额 → 等待者趁机启动」的关键，搬移时不能动。
+- 协调者必须留在 `ImgZip.Core` 程序集内，否则 `QueueCancellation` / `Execution` / `Request` 的 `internal` 全部要变 `public`，等于把内部状态暴露成 API。
+
+#### 原计划的错误（已修正）
+
+| # | 错误 | 修正 |
+| --- | --- | --- |
+| E1 | 改动清单写「删除 `CancelAllAndWaitAsync` 或改造为按任务取消」 | 与本阶段「测试不改」的验收**直接冲突**。`LifecycleTests.cs:167,176` 两处调用它，`MainWindow.xaml.cs:283` 的关窗流程也依赖全局语义。**阶段 1 必须原样保留**，按任务取消推迟到阶段 2 |
+| E2 | 「24 处 `new MainViewModel(...)`」 | 实为 **17 处**（16 处测试 + 1 处 App） |
+| E3 | 「43 组测试」 | 阶段 0 之后是 **44 次执行** |
+| E4 | 未提 `dispatch` 的新归属 | 见隐性耦合 ③ |
+| E5 | `Config` 归属自相矛盾 | 见隐性耦合 ②，1b 上移为单一真相源 |
+| E6 | 未提 `Mirror` / `primaryRequest` 的替代方案 | 见「必须留在 MainViewModel 的」表 |
+| E7 | 把 `RecoverTasksAsync` 只当成「多调用几次」 | 见隐性耦合 ⑤ |
+
 
 ### 阶段 2：`MainViewModel` 改为单任务模型
 
@@ -268,14 +384,23 @@ Explorer（前台） → 启动 ImgZip.exe 实例 B（B 获得前台权）
 ## 阶段依赖关系
 
 ```
-阶段 0 ──→ 阶段 1 ──→ 阶段 2 ──→ 阶段 3 ──→ 阶段 4
-                        │
-                        └──→ 阶段 6（必须在阶段 2 之后，因为 last 模式依赖单任务草稿）
-                                     ↑
+阶段 0 ──→ 1a ──→ 1b ──→ 1c ──→ 阶段 2 ──→ 阶段 3 ──→ 阶段 4
+                                    │
+                                    └──→ 阶段 6（必须在阶段 2 之后，因为 last 模式依赖单任务草稿）
+                                                  ↑
 阶段 5（独立，可与 3/4/6 并行）
 ```
 
-阶段 0 与阶段 5 都相对独立；阶段 1 是分水岭，它必须做到**测试零修改**才算成功。
+阶段 0 与阶段 5 相对独立。**1a 是分水岭**——它必须做到「44 次执行、零测试修改」才算成功，这是证明「搬家是纯机械的」的唯一机会。1b 补共享机制，1c 才真正上单例。
+
+## 进度记录
+
+| 阶段 | 状态 | 提交 |
+| --- | --- | --- |
+| 阶段 0 | ✅ 已完成，44 组通过 | `e67eb5d` |
+| 1a | 待开始 | — |
+| 1b / 1c / 2-6 | 待开始 | — |
+
 
 ## 不要一次性重写
 
