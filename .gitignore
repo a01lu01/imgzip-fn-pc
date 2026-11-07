@@ -16,6 +16,11 @@ imgzip-launcher.exe
 compare/
 compare_compressed/
 
+# 演示素材由脚本生成，避免 120 MB 二进制入库；脚本与说明仍然追踪
+demo-images/*
+!demo-images/README.md
+!demo-images/make-demo-images.py
+
 # ---- Git/系统 ----
 .git/
 .DS_Store
