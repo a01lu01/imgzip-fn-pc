@@ -44,6 +44,30 @@ await Test("config import, defaults, atomic save and theme persistence", async (
     Check(!Directory.EnumerateFiles(store.DirectoryPath, "*.tmp").Any(), "Temporary configuration leaked");
     Check(Wire.Decode<AppConfig>("""{"theme":"invalid"}""").Normalize().Theme == "system", "Invalid theme not normalized");
 });
+await Test("engine mode defaults to auto for legacy configs and normalizes invalid values", async () =>
+{
+    // 0.4.0 阶段 0：本次只引入字段与兜底，不改 SetSourcesAsync 的引擎判定逻辑。
+    // 旧配置缺字段时必须等价于 auto，升级零行为变化。
+    var store = new ConfigStore(Path.Combine(scratch, "engine-mode"));
+    Directory.CreateDirectory(store.DirectoryPath);
+    await File.WriteAllTextAsync(store.FilePath, """{"server":"192.168.1.10","user":"nas","keyPath":"C:\\key\\id_nas"}""");
+    var legacy = await store.LoadAsync();
+    Check(legacy.EngineMode == "auto", $"Legacy config should default to auto, got '{legacy.EngineMode}'");
+    Check(legacy.LastEngine == "pc", $"Legacy config should default LastEngine to pc, got '{legacy.LastEngine}'");
+
+    var defaults = new AppConfig();
+    Check(defaults.EngineMode == "auto" && defaults.LastEngine == "pc", "AppConfig defaults changed");
+
+    Check(Wire.Decode<AppConfig>("""{"engineMode":"bogus"}""").Normalize().EngineMode == "auto", "Invalid engine mode not normalized");
+    Check(Wire.Decode<AppConfig>("""{"lastEngine":"mac"}""").Normalize().LastEngine == "pc", "Invalid last engine not normalized");
+    Check(Wire.Decode<AppConfig>("""{"engineMode":null,"lastEngine":null}""").Normalize() is { EngineMode: "auto", LastEngine: "pc" }, "Null engine fields not normalized");
+    Check(new AppConfig { EngineMode = "last", LastEngine = "nas" }.Normalize() is { EngineMode: "last", LastEngine: "nas" }, "Valid engine mode or last engine was dropped");
+    Check(new AppConfig { EngineMode = "fixedPc" }.Normalize().EngineMode == "fixedPc", "fixedPc engine mode was dropped");
+
+    await store.SaveAsync(new AppConfig { EngineMode = "last", LastEngine = "nas" });
+    var persisted = await store.LoadAsync();
+    Check(persisted is { EngineMode: "last", LastEngine: "nas" }, "Engine mode or last engine not persisted");
+});
 await Test("copy skipped files preference persists in config", async () =>
 {
     var store = new ConfigStore(Path.Combine(scratch, "copy-preference"));

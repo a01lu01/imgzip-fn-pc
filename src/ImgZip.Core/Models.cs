@@ -29,13 +29,19 @@ public sealed record AppConfig
     public int NasConcurrency { get; init; } = 2;
     /// <summary>文件夹任务完成后是否复制未参与压缩的普通文件。</summary>
     public bool CopySkippedFiles { get; init; }
+    /// <summary>引擎默认选择：auto（自动推断）/ fixedPc（固定本机）/ last（记住上次切换）。</summary>
+    public string EngineMode { get; init; } = "auto";
+    /// <summary>last 模式记住的引擎：pc / nas。夹取回落时不改写该值。</summary>
+    public string LastEngine { get; init; } = "pc";
     public AppConfig Normalize() => this with
     {
         Server = (Server ?? "").Trim(), User = (User ?? "").Trim(), NasIp = (NasIp ?? "").Trim(),
         KeyPath = (KeyPath ?? "").Trim(), NasHosts = NasHosts ?? [],
         Theme = Theme is "light" or "dark" ? Theme : "system",
         PcConcurrency = PcConcurrency is 0 or (> 0 and <= 64) ? PcConcurrency : 0,
-        NasConcurrency = NasConcurrency is >= 1 and <= 4 ? NasConcurrency : 2
+        NasConcurrency = NasConcurrency is >= 1 and <= 4 ? NasConcurrency : 2,
+        EngineMode = EngineMode is "auto" or "fixedPc" or "last" ? EngineMode : "auto",
+        LastEngine = LastEngine is "pc" or "nas" ? LastEngine : "pc"
     };
     public string? ValidateConnection()
     {
