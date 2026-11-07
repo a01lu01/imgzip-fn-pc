@@ -17,7 +17,7 @@ public partial class MainViewModel
             if (options.Validate() is { } validation) throw new ArgumentException(validation);
             if (EngineIndex == 1 && Config.ValidateConnection() is { } error) throw new ArgumentException(error);
             var request = Request("run") with { Options = options };
-            task = await Coordinator.StartAsync(request, EngineIndex == 1 ? 1 : 0);
+            task = await Coordinator.StartAsync(Attachment, request, EngineIndex == 1 ? 1 : 0);
             if (task is null) return;
         }
         catch (Exception ex) { Message = ex.Message; return; }

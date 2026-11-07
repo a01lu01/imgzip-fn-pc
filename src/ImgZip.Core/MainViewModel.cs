@@ -50,8 +50,9 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string preset = "archive-jpeg";
     public ObservableCollection<string> Failures { get; } = [];
 
-    /// <summary>应用级任务协调者；1a 中每个 VM 自建一个，未显式传入时行为与拆分前一致。</summary>
+    /// <summary>应用级任务协调者；未显式传入时自建一个，行为与拆分前的单窗口一致。</summary>
     public TaskCoordinator Coordinator { get; }
+    public TaskCoordinator.Attachment Attachment { get; }
     public ObservableCollection<CompressionTaskViewModel> Tasks => Coordinator.Tasks;
 
     public MainViewModel(IWorkerClient worker, ConfigStore store, string enginePath, Action<Action>? dispatch = null, ITaskStore? taskStore = null)
@@ -63,13 +64,15 @@ public partial class MainViewModel : ObservableObject
         this.worker = worker; this.store = store; this.enginePath = enginePath;
         // C2：dispatch 与 taskStore 必须原样透传给协调者，漏任一都会破坏既有测试的语义。
         Coordinator = coordinator ?? new TaskCoordinator(worker, taskStore ?? new TaskStore(store.DirectoryPath), dispatch);
-        Coordinator.Sink = SetPrimary;
-        Coordinator.Mirror = Mirror;
-        Coordinator.NotifyTasks = NotifyTasks;
-        Coordinator.NotifyDerived = NotifyDerived;
-        Coordinator.Report = notice => Message = notice;
-        Coordinator.ConfigAccessor = () => Config;
+        // 回调按窗口挂接：协调者只通知持有该任务的窗口，Detach 后不再收到事件。
+        Attachment = Coordinator.Attach(SetPrimary, Mirror, NotifyTasks, NotifyDerived, notice => Message = notice, () => OnConfigChanged());
         initializing = false;
+    }
+    private void OnConfigChanged()
+    {
+        // 协调者的配置是权威副本；窗口跟随，但不再各自落盘覆盖。
+        Config = Coordinator.Config;
+        CopySkippedFiles = Config.CopySkippedFiles;
     }
 
     // ---- 草稿（新建任务）状态 ----
@@ -154,7 +157,9 @@ public partial class MainViewModel : ObservableObject
     {
         try { Config = await store.LoadAsync(); CopySkippedFiles = Config.CopySkippedFiles; }
         catch (Exception ex) { hasConfigurationError = true; Message = $"配置无法读取，原文件已保留。请在设置中导入或保存有效配置：{ex.Message}"; }
-        await Coordinator.RecoverTasksAsync();
+        // 配置是全局的：第一个初始化的窗口把磁盘内容交给协调者，后续窗口沿用同一份。
+        Coordinator.AdoptConfig(Config);
+        await Coordinator.EnsureRecoveredAsync();
         Coordinator.MarkReady(); NotifyDerived();
         await ProbeSelectedAsync();
     }
@@ -227,23 +232,43 @@ public partial class MainViewModel : ObservableObject
     public async Task SetThemeAsync(string theme)
     {
         if (theme is not ("system" or "light" or "dark")) return;
-        Config = Config with { Theme = theme };
-        if (hasConfigurationError) { Message = "主题已临时生效。请先在设置中修复配置，避免覆盖无法读取的原文件。"; return; }
-        try { await store.SaveAsync(Config); } catch (Exception ex) { Message = $"主题无法保存：{ex.Message}"; }
+        if (hasConfigurationError) { Config = Config with { Theme = theme }; Message = "主题已临时生效。请先在设置中修复配置，避免覆盖无法读取的原文件。"; return; }
+        try
+        {
+            // 读-改-写：避免另一个窗口在此期间保存的连接设置被本窗口的整份配置覆盖。
+            await Coordinator.UpdateConfigAsync(config => config with { Theme = theme }, updated => store.SaveAsync(updated));
+            Config = Coordinator.Config;
+        }
+        catch (Exception ex) { Config = Config with { Theme = theme }; Message = $"主题无法保存：{ex.Message}"; }
     }
     public async Task SetCopySkippedFilesAsync(bool value)
     {
         CopySkippedFiles = value;
-        Config = Config with { CopySkippedFiles = value };
-        if (hasConfigurationError) { Message = "选项已临时生效。请先在设置中修复配置，避免覆盖无法读取的原文件。"; return; }
-        try { await store.SaveAsync(Config); } catch (Exception ex) { Message = $"复制其他文件偏好无法保存：{ex.Message}"; }
+        if (hasConfigurationError) { Config = Config with { CopySkippedFiles = value }; Message = "选项已临时生效。请先在设置中修复配置，避免覆盖无法读取的原文件。"; return; }
+        try
+        {
+            await Coordinator.UpdateConfigAsync(config => config with { CopySkippedFiles = value }, updated => store.SaveAsync(updated));
+            Config = Coordinator.Config;
+        }
+        catch (Exception ex) { Config = Config with { CopySkippedFiles = value }; Message = $"复制其他文件偏好无法保存：{ex.Message}"; }
     }
     public async Task SaveConnectionAsync(AppConfig draft)
     {
         if (!string.IsNullOrWhiteSpace(draft.Server) && draft.ValidateConnection() is { } validation) throw new ArgumentException(validation);
-        var updated = draft.Normalize() with { Theme = Config.Theme, CopySkippedFiles = Config.CopySkippedFiles };
         if (hasConfigurationError && File.Exists(store.FilePath)) File.Copy(store.FilePath, store.FilePath + $".invalid-{DateTime.Now:yyyyMMddHHmmss}", false);
-        await store.SaveAsync(updated); Config = updated; hasConfigurationError = false;
+        try
+        {
+            await Coordinator.UpdateConfigAsync(
+                config => draft.Normalize() with { Theme = config.Theme, CopySkippedFiles = config.CopySkippedFiles },
+                updated => store.SaveAsync(updated));
+            Config = Coordinator.Config; hasConfigurationError = false;
+        }
+        catch
+        {
+            // 保存失败时窗口仍显示草稿，方便重试；不写入协调者。
+            Config = draft.Normalize() with { Theme = Config.Theme, CopySkippedFiles = Config.CopySkippedFiles };
+            throw;
+        }
         await ProbeSelectedAsync();
     }
     public async Task<WorkerEvent> TestConnectionAsync(AppConfig draft)

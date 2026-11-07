@@ -213,6 +213,72 @@ static class LifecycleTests
             var recovered = new MainViewModel(recoveredWorker, config, "fixture"); await recovered.InitializeAsync();
             Check(recovered.Tasks.Count == 0 && recoveredWorker.Runs.Count == 0, "Finished recovery reran or retained task");
         });
+        await test("shared coordinator: PC limit spans both windows and queues the rest", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "shared-pc"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var first = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await first.InitializeAsync();
+            var second = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await second.InitializeAsync();
+            Check(ReferenceEquals(first.Tasks, second.Tasks), "Windows do not share one task pool");
+            Check(second.Tasks.Count == 0, "Second window recovered tasks already in the shared pool");
+            var runA = await Start(first, "shared-a"); await Until(() => worker.Runs.Count == 1);
+            var runB = await Start(second, "shared-b");
+            await Task.Delay(350);
+            Check(worker.Runs.Count == 1 && second.Tasks.Any(t => t.IsQueued && t != first.Tasks.First(t => t.IsRunning)),
+                "PC limit was applied per window instead of across windows");
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await runA;
+            await Until(() => worker.Runs.Count == 2);
+            worker.Finish(worker.Runs[1].JobId, "succeeded"); await runB;
+            Check(first.Tasks.Count == 0, "Finished tasks were retained after the shared run");
+        });
+        await test("shared coordinator: NAS tasks serialize across windows", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "shared-nas"));
+            await config.SaveAsync(new() { PcConcurrency = 4, Server = "nas.local", User = "nas", KeyPath = @"C:\key", NasHosts = ["nas.local"] });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var first = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await first.InitializeAsync();
+            var second = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await second.InitializeAsync();
+            // UNC 来源让 NasEligible 为真，SetSourcesAsync 才会把引擎定为 NAS。
+            async Task<Task> StartNas(MainViewModel vm, string name)
+            {
+                await vm.SetSourcesAsync([$@"\\nas.local\photos\{name}.jpg"]);
+                Check(vm.EngineIndex == 1, "Engine fixture did not select NAS for UNC sources");
+                return vm.StartAsync();
+            }
+            var runA = await StartNas(first, "shared-nas-a");
+            await Until(() => worker.Runs.Count == 1 && worker.Runs[0].Engine == "nas");
+            var runB = await StartNas(second, "shared-nas-b");
+            await Task.Delay(350);
+            Check(worker.Runs.Count(r => r.Engine == "nas") == 1 && second.Tasks.Any(t => t.IsQueued), "NAS tasks ran in parallel across windows");
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await runA;
+            await Until(() => worker.Runs.Count == 2);
+            worker.Finish(worker.Runs[1].JobId, "succeeded"); await runB;
+        });
+        await test("shared coordinator: closing one window leaves the other task running", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "shared-close"));
+            await config.SaveAsync(new() { PcConcurrency = 2 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var first = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await first.InitializeAsync();
+            var second = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await second.InitializeAsync();
+            var runA = await Start(first, "shared-close-a"); await Until(() => worker.Runs.Count == 1);
+            var runB = await Start(second, "shared-close-b"); await Until(() => worker.Runs.Count == 2);
+            var jobA = worker.Runs[0].JobId; var jobB = worker.Runs[1].JobId;
+            // 关闭第一个窗口：只取消它自己的任务，第二个继续。任务池是共享的，按 JobId 断言。
+            first.Attachment.Dispose();
+            await first.CancelAsync(); await runA;
+            Check(coordinator.Get(jobA) is { TerminalConfirmed: true }, "Closed window left its task unresolved");
+            Check(coordinator.Get(jobB) is { TerminalConfirmed: false } running && running.IsRunning, "Closing one window stopped the other task");
+            worker.Finish(jobB, "succeeded"); await runB;
+            Check(coordinator.Get(jobB) is null, "Finished task was not removed from the shared pool");
+        });
     }
 
     private sealed class ControlledWorker : IWorkerClient
