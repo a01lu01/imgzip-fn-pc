@@ -22,11 +22,11 @@ public sealed partial class MainWindow : Window
     private bool synchronizingEngine;
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
-    public MainWindow(IWorkerClient worker, ConfigStore store, string[] initialPaths)
+    public MainWindow(IWorkerClient worker, ConfigStore store, TaskCoordinator coordinator, string[] initialPaths)
     {
         this.store = store;
         this.initialPaths = initialPaths;
-        ViewModel = new MainViewModel(worker, store, Path.Combine(AppContext.BaseDirectory, "bin", "caesiumclt.exe"), action => DispatcherQueue.TryEnqueue(() => action()));
+        ViewModel = new MainViewModel(worker, store, Path.Combine(AppContext.BaseDirectory, "bin", "caesiumclt.exe"), action => DispatcherQueue.TryEnqueue(() => action()), null, coordinator);
         InitializeComponent();
         Root.DataContext = ViewModel;
         Title = "ImgZip · 图片压缩";
@@ -263,7 +263,7 @@ public sealed partial class MainWindow : Window
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         SaveWindowPlacement();
-        if (allowClose || !ViewModel.HasUnfinishedTasks) return;
+        if (allowClose || !ViewModel.HasUnfinishedTasks) { ViewModel.Attachment.Dispose(); return; }
         args.Cancel = true;
         if (showingClose) return;
         showingClose = true;
@@ -281,10 +281,10 @@ public sealed partial class MainWindow : Window
             if (result == ContentDialogResult.Primary)
             {
                 await ViewModel.CancelAllAndWaitAsync();
-                if (!ViewModel.HasUnfinishedTasks) { allowClose = true; Close(); }
+                if (!ViewModel.HasUnfinishedTasks) { allowClose = true; ViewModel.Attachment.Dispose(); Close(); }
                 else ViewModel.Message = "仍有任务尚未确认结束，窗口已保留。请在任务列表中重新检查。";
             }
-            else if (result == ContentDialogResult.Secondary) { allowClose = true; Close(); }
+            else if (result == ContentDialogResult.Secondary) { allowClose = true; ViewModel.Attachment.Dispose(); Close(); }
         }
         catch (Exception ex) { ViewModel.Message = ex.Message; }
         finally { showingClose = false; }

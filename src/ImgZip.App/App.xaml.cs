@@ -1,4 +1,5 @@
 using ImgZip.Core;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 
 namespace ImgZip.App;
@@ -6,6 +7,7 @@ public partial class App : Application
 {
     private MainWindow? window;
     private InstanceBroker? broker;
+    private TaskCoordinator? coordinator;
     public App()
     {
         InitializeComponent();
@@ -43,7 +45,12 @@ public partial class App : Application
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ImgZip");
         var shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
         var worker = new WorkerClient(shell, Path.Combine(AppContext.BaseDirectory, "worker", "imgzip-worker.ps1"));
-        window = new MainWindow(worker, new ConfigStore(directory), paths);
+        var store = new ConfigStore(directory);
+        // 应用级单例：名额池与任务记录只此一份，所有窗口共享。
+        // 阶段 1c 仍是单窗口，因此统一使用 UI 线程的派发器。
+        var dispatcher = DispatcherQueue.GetForCurrentThread();
+        coordinator = new TaskCoordinator(worker, new TaskStore(directory), action => dispatcher.TryEnqueue(() => action()));
+        window = new MainWindow(worker, store, coordinator, paths);
         window.Activate();
         _ = broker.ListenAsync(incoming => window.DispatcherQueue.TryEnqueue(async () =>
         {
