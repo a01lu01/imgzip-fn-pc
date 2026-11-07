@@ -9,16 +9,11 @@ public partial class MainViewModel : ObservableObject
     private readonly IWorkerClient worker;
     private readonly ConfigStore store;
     private readonly string enginePath;
-    private readonly Action<Action> dispatch;
-    private readonly Dictionary<string, CompressionTaskViewModel> taskIndex = new(StringComparer.Ordinal);
     private WorkerRequest? primaryRequest;
     private string[] sources = [];
     private bool initializing = true;
     private bool hasConfigurationError;
     private int probeGeneration;
-    private readonly ITaskStore taskStore;
-    private readonly SemaphoreSlim taskGate = new(1, 1);
-    private bool tasksReady;
 
     [ObservableProperty] private AppConfig config = new();
     [ObservableProperty] private string state = "empty";
@@ -45,6 +40,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool folderSource;
     [ObservableProperty] private bool dryRun;
     [ObservableProperty] private bool pcAvailable;
+    /// <summary>NAS 探测结果：1a 由协调者持有，窗口同步一份可绑定的副本。</summary>
     [ObservableProperty] private int nasCores;
     [ObservableProperty] private long nasMemoryMb;
     [ObservableProperty] private bool advancedExpanded;
@@ -53,13 +49,26 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int completed;
     [ObservableProperty] private string preset = "archive-jpeg";
     public ObservableCollection<string> Failures { get; } = [];
-    public ObservableCollection<CompressionTaskViewModel> Tasks { get; } = [];
+
+    /// <summary>应用级任务协调者；1a 中每个 VM 自建一个，未显式传入时行为与拆分前一致。</summary>
+    public TaskCoordinator Coordinator { get; }
+    public ObservableCollection<CompressionTaskViewModel> Tasks => Coordinator.Tasks;
 
     public MainViewModel(IWorkerClient worker, ConfigStore store, string enginePath, Action<Action>? dispatch = null, ITaskStore? taskStore = null)
+        : this(worker, store, enginePath, dispatch, taskStore, null) { }
+
+    /// <summary>协调者参数只能追加在末尾，保持既有位置参数调用不变。</summary>
+    public MainViewModel(IWorkerClient worker, ConfigStore store, string enginePath, Action<Action>? dispatch, ITaskStore? taskStore, TaskCoordinator? coordinator)
     {
         this.worker = worker; this.store = store; this.enginePath = enginePath;
-        this.dispatch = dispatch ?? (action => action());
-        this.taskStore = taskStore ?? new TaskStore(store.DirectoryPath);
+        // C2：dispatch 与 taskStore 必须原样透传给协调者，漏任一都会破坏既有测试的语义。
+        Coordinator = coordinator ?? new TaskCoordinator(worker, taskStore ?? new TaskStore(store.DirectoryPath), dispatch);
+        Coordinator.Sink = SetPrimary;
+        Coordinator.Mirror = Mirror;
+        Coordinator.NotifyTasks = NotifyTasks;
+        Coordinator.NotifyDerived = NotifyDerived;
+        Coordinator.Report = notice => Message = notice;
+        Coordinator.ConfigAccessor = () => Config;
         initializing = false;
     }
 
@@ -67,8 +76,8 @@ public partial class MainViewModel : ObservableObject
     public bool IsRunning => State is "preparing" or "running" or "cancelling";
     public bool IsLocked => IsRunning || State == "unknown";
     public bool IsUnknown => State == "unknown";
-    public bool CanEdit => tasksReady;
-    public bool HasUnfinishedTasks => Tasks.Any(t => !t.TerminalConfirmed);
+    public bool CanEdit => Coordinator.TasksReady;
+    public bool HasUnfinishedTasks => Coordinator.HasUnfinishedTasks;
     public bool CanStart => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
     /// <summary>草稿是否可启动新任务：多任务下不再受“运行中”限制。</summary>
     public bool CanStartTask => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
@@ -89,15 +98,8 @@ public partial class MainViewModel : ObservableObject
     public double Progress => Total == 0 ? 0 : 100d * Completed / Total;
     public string ProgressText => $"{Completed} / {Total}";
     public string StartText => DryRun ? "开始预演" : "开始压缩";
-    public int EffectivePcConcurrency => Config.PcConcurrency is > 0 and <= 64 ? Config.PcConcurrency : Math.Max(1, Environment.ProcessorCount);
-    public int EffectiveNasConcurrency
-    {
-        get
-        {
-            var hardwareLimit = NasCores > 0 ? Math.Min(NasCores, 4) : 4;
-            return Math.Clamp(Config.NasConcurrency, 1, hardwareLimit);
-        }
-    }
+    public int EffectivePcConcurrency => Coordinator.EffectivePcConcurrency;
+    public int EffectiveNasConcurrency => Coordinator.EffectiveNasConcurrency;
     public string NasConcurrencyText
     {
         get
@@ -152,8 +154,8 @@ public partial class MainViewModel : ObservableObject
     {
         try { Config = await store.LoadAsync(); CopySkippedFiles = Config.CopySkippedFiles; }
         catch (Exception ex) { hasConfigurationError = true; Message = $"配置无法读取，原文件已保留。请在设置中导入或保存有效配置：{ex.Message}"; }
-        await RecoverTasksAsync();
-        tasksReady = true; NotifyDerived();
+        await Coordinator.RecoverTasksAsync();
+        Coordinator.MarkReady(); NotifyDerived();
         await ProbeSelectedAsync();
     }
     public void SelectPreset(string name)
@@ -208,11 +210,13 @@ public partial class MainViewModel : ObservableObject
             }
             else
             {
-                NasCores = result?.NasCores > 0 ? result.NasCores : 0;
-                NasMemoryMb = result?.NasMemoryMb > 0 ? result.NasMemoryMb : 0;
-                var memory = NasMemoryMb > 0 ? $" · 可用内存 {Display.Bytes(NasMemoryMb * 1024 * 1024)}" : "";
+                var cores = result?.NasCores > 0 ? result.NasCores : 0;
+                var memory = result?.NasMemoryMb > 0 ? result.NasMemoryMb : 0;
+                Coordinator.SetNasProbeResult(cores, memory);
+                NasCores = cores; NasMemoryMb = memory;
+                var memoryText = memory > 0 ? $" · 可用内存 {Display.Bytes(memory * 1024 * 1024)}" : "";
                 EngineStatus = result?.NasAvailable == true
-                    ? $"NAS 引擎就绪 · {NasConcurrencyText}{memory}"
+                    ? $"NAS 引擎就绪 · {NasConcurrencyText}{memoryText}"
                     : result?.Connected == true
                         ? "SSH 已连接；NAS 引擎或必要工具缺失，请查看设置说明"
                         : string.IsNullOrWhiteSpace(result?.Message) ? "NAS 未连接，请检查设置" : result.Message;
