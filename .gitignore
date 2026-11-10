@@ -20,6 +20,8 @@ compare_compressed/
 demo-images/*
 !demo-images/README.md
 !demo-images/make-demo-images.py
+# 演示素材的压缩产物，同样由测试产生
+demo-images_compressed/
 
 # ---- Git/系统 ----
 .git/
