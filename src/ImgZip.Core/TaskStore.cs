@@ -11,6 +11,10 @@ public sealed record TaskRecord
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public WorkerEvent? Result { get; init; }
     public string[] Failures { get; init; } = [];
+    /// <summary>执行层进程 ID；0 表示尚未启动或未记录。重启时用它判断任务是否真的还在跑。</summary>
+    public int WorkerPid { get; init; }
+    /// <summary>执行层进程的启动时刻（UTC）。与 PID 一起排除 PID 复用。</summary>
+    public DateTimeOffset WorkerStartedAt { get; init; }
 }
 
 public sealed record TaskRecovery(IReadOnlyList<TaskRecord> Records, IReadOnlyList<string> Errors);
@@ -67,6 +71,7 @@ public sealed class TaskStore(string directory) : ITaskStore
             || request.Engine is not ("pc" or "nas") || request.Sources is not { Length: > 0 }
             || request.Sources.Any(string.IsNullOrWhiteSpace)
             || request.Options is null || request.Config is null || record.Failures is null
+            || record.WorkerPid < 0
             || record.Phase is not ("queued" or "launching" or "running" or "finished"))
             throw new InvalidDataException("任务记录版本或内容无效。");
         if (record.Phase == "finished")

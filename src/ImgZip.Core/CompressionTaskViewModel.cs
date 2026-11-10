@@ -39,6 +39,9 @@ public partial class CompressionTaskViewModel : ObservableObject
     internal string PersistedPhase { get; set; } = "queued";
     internal Task? Execution { get; set; }
     internal WorkerEvent? FinalResult { get; set; }
+    /// <summary>执行层进程 ID；0 表示未记录。用于强制关闭与重启时的存活判定。</summary>
+    internal int WorkerPid { get; set; }
+    internal DateTimeOffset WorkerStartedAt { get; set; }
 
     [ObservableProperty] private string state = "queued";
     [ObservableProperty] private string message = "";

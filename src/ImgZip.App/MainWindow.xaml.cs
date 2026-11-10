@@ -263,30 +263,20 @@ public sealed partial class MainWindow : Window
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         SaveWindowPlacement();
-        if (allowClose || !ViewModel.HasUnfinishedTasks) { ViewModel.Attachment.Dispose(); return; }
+        if (allowClose) { ViewModel.Attachment.Dispose(); return; }
+        // 点 X 直接强制关闭：杀进程树、清暂存、写终态。杀不掉的记录会保留并标注，下次启动据 PID 自动定论。
+        if (!ViewModel.HasUnfinishedTasks) { ViewModel.Attachment.Dispose(); return; }
         args.Cancel = true;
         if (showingClose) return;
         showingClose = true;
         try
         {
-            var dialog = new ContentDialog
-            {
-                XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
-                Title = "任务尚未确认结束",
-                Content = "将取消全部运行和排队任务，并重新检查状态未知的任务。仅关闭窗口不会保证停止任务；重开后，未启动任务等待手动继续，其他任务需要重新检查。",
-                PrimaryButtonText = "取消并等待",
-                SecondaryButtonText = "仅关闭窗口", CloseButtonText = "返回"
-            };
-            var result = await dialog.ShowAsync();
-            if (result == ContentDialogResult.Primary)
-            {
-                await ViewModel.CancelAllAndWaitAsync();
-                if (!ViewModel.HasUnfinishedTasks) { allowClose = true; ViewModel.Attachment.Dispose(); Close(); }
-                else ViewModel.Message = "仍有任务尚未确认结束，窗口已保留。请在任务列表中重新检查。";
-            }
-            else if (result == ContentDialogResult.Secondary) { allowClose = true; ViewModel.Attachment.Dispose(); Close(); }
+            await ViewModel.ForceCloseAsync();
+            allowClose = true;
+            ViewModel.Attachment.Dispose();
+            Close();
         }
-        catch (Exception ex) { ViewModel.Message = ex.Message; }
+        catch (Exception ex) { ViewModel.Message = $"关闭失败：{ex.Message}"; }
         finally { showingClose = false; }
     }
 }

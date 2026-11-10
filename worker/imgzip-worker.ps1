@@ -7,6 +7,8 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8
 $request = $null
 $journal = $null
+$workerPidFile = $null
+$workerStartedAt = $null
 $recordEvents = $false
 $lastTerminal = $false
 $remoteMayBeRunning = $false
@@ -509,6 +511,12 @@ try {
         } else { Finish 'unknown' '找不到任务记录，无法确认取消。' }
     } else {
         $null=New-Item -ItemType Directory -Path $jobDirectory
+        # 崩溃恢复兜底：在启动任何实际工作前把本进程身份写入任务目录，主程序可据此判断任务死活。
+        # 只是兜底信息，写入失败（目录或权限问题）不得中断任务。
+        $workerPidFile = Join-Path $jobDirectory 'worker.pid'
+        $workerStartedAt = ''
+        try { $workerStartedAt = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('O', [System.Globalization.CultureInfo]::InvariantCulture) } catch { }
+        try { [IO.File]::WriteAllText($workerPidFile, (ConvertTo-Json -InputObject @{pid=$PID;startedAt=$workerStartedAt} -Compress), $utf8) } catch { }
         $recordEvents=$true
         if ($request.engine -eq 'pc') { Run-Local }
         else {

@@ -59,6 +59,15 @@ public partial class MainViewModel
         await Coordinator.CancelAllAndWaitAsync();
         if (PrimaryTask() is { } task) Mirror(task);
     }
+    /// <summary>强制关闭：杀进程、清暂存、写终态。返回未能确认停止的任务数。</summary>
+    public async Task<ForceCloseReport> ForceCloseAsync()
+    {
+        var report = await Coordinator.ForceCloseAsync();
+        if (report.Terminated > 0) Message = "";
+        if (report.Unconfirmed > 0)
+            Message = $"{report.Unconfirmed} 个任务的进程未能确认停止；记录已保留，下次启动会自动判定。";
+        return report;
+    }
     private CompressionTaskViewModel? PrimaryTask() =>
         primaryRequest is not null ? Coordinator.Get(primaryRequest.JobId) : null;
     public Task CancelAsync() => PrimaryTask() is { } task ? CancelTaskAsync(task) : Task.CompletedTask;

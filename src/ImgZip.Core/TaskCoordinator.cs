@@ -17,10 +17,31 @@ public sealed class TaskCoordinator
     private readonly SemaphoreSlim configGate = new(1, 1);
     private Task? recovery;
 
-    public TaskCoordinator(IWorkerClient worker, ITaskStore taskStore, Action<Action>? dispatch = null)
+    public TaskCoordinator(IWorkerClient worker, ITaskStore taskStore, Action<Action>? dispatch = null, IProcessProbe? probe = null)
     {
         this.worker = worker; this.taskStore = taskStore;
+        this.probe = probe ?? new SystemProcessProbe();
         Dispatch = dispatch ?? (action => action());
+        // 执行层进程一起动就记下 PID 与启动时刻，重启时据此判断任务是否真的还在跑。
+        if (worker is IWorkerTracker tracker) tracker.ProcessStarted += RememberProcess;
+    }
+
+    private readonly IProcessProbe probe;
+
+    private void RememberProcess(string jobId, int pid, DateTimeOffset startedAt)
+    {
+        taskIndex.TryGetValue(jobId, out var task);
+        if (task is null) return;
+        task.WorkerPid = pid; task.WorkerStartedAt = startedAt;
+        // launching 阶段就已经写好记录；这里补写一次 PID，让重启时能查到。
+        if (task.PersistedPhase is "launching" or "running")
+            _ = PersistProcessAsync(task);
+    }
+    private async Task PersistProcessAsync(CompressionTaskViewModel task)
+    {
+        try { await taskStore.SaveAsync(Record(task, task.PersistedPhase)); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>默认派发器；单窗口时所有生命周期转换都在它上面串行执行。</summary>
@@ -161,7 +182,8 @@ public sealed class TaskCoordinator
     private TaskRecord Record(CompressionTaskViewModel task, string phase) => new()
     {
         Request = task.Request, Phase = phase, CreatedAt = task.CreatedAt,
-        Result = task.FinalResult, Failures = task.Failures.ToArray()
+        Result = task.FinalResult, Failures = task.Failures.ToArray(),
+        WorkerPid = task.WorkerPid, WorkerStartedAt = task.WorkerStartedAt
     };
 
     /// <summary>恢复只跑一次：多个窗口并发初始化时共享同一个 Task，避免同一 JobId 复活出两个实例。</summary>
@@ -177,25 +199,85 @@ public sealed class TaskCoordinator
             {
                 // 已在池中的记录不重复登记：再次恢复同一 JobId 会造成两个实例各自收事件、各自收尾。
                 if (taskIndex.ContainsKey(record.Request.JobId)) continue;
+                // 已确认终态的记录不该再出现在“待检查”里：直接收尾并删掉。
+                if (record.Phase == "finished" && record.Result is { } confirmed)
+                {
+                    var done = new CompressionTaskViewModel(record.Request, record.Request.Engine == "nas" ? 1 : 0, record.CreatedAt)
+                    { PersistedPhase = "finished", WorkerPid = record.WorkerPid, WorkerStartedAt = record.WorkerStartedAt };
+                    foreach (var failure in record.Failures) done.Failures.Add(failure);
+                    done.Apply(confirmed);
+                    if (done.TerminalConfirmed) { await taskStore.DeleteAsync(done.JobId); continue; }
+                }
+                // 先判定状态再登记：镜像回调在登记时读取 State，晚设置会让窗口显示成“排队中”。
+                var queued = record.Phase == "queued";
+                var identity = ResolveProcessIdentity(record);
+                var tracked = identity.Pid > 0;
+                var alive = tracked && probe.IsAlive(identity.Pid, identity.StartedAt);
+                var interrupted = tracked && !alive;
                 var task = new CompressionTaskViewModel(record.Request, record.Request.Engine == "nas" ? 1 : 0, record.CreatedAt)
                 {
                     PersistedPhase = record.Phase,
-                    State = record.Phase == "queued" ? "awaitingResume" : "unknown",
-                    OwnsSlot = record.Phase is "launching" or "running",
-                    RunDispatched = record.Phase is "launching" or "running",
-                    Message = record.Phase == "queued" ? "此任务尚未启动，可继续或移除。" : "上次任务尚未确认结束，请重新检查。",
-                    ResultSummary = record.Phase == "queued" ? "等待手动继续" : "状态待确认"
+                    WorkerPid = identity.Pid, WorkerStartedAt = identity.StartedAt,
+                    State = queued ? "awaitingResume" : alive ? "running" : "unknown",
+                    // 只有进程确认已死才不占名额；其余情况一律保守保留。
+                    OwnsSlot = !interrupted && !queued,
+                    RunDispatched = !interrupted && !queued,
+                    Message = queued ? "此任务尚未启动，可继续或移除。"
+                        : alive ? "上一会话的执行进程仍在运行，正在接管。"
+                        : "旧记录未包含进程信息，无法自动判定；请重新检查。",
+                    ResultSummary = queued ? "等待手动继续" : alive ? "正在运行" : "状态待确认"
                 };
                 foreach (var failure in record.Failures) task.Failures.Add(failure);
                 taskIndex[task.JobId] = task; Tasks.Add(task); AttachTask(task, null);
-                if (record.Phase == "finished" && record.Result is { } terminal)
-                {
-                    task.Apply(terminal); MirrorTask(task); await FinalizeTaskAsync(task);
-                }
+                // 接管的进程没有本会话句柄，但 PID 已写进任务，强制关闭时仍能按 PID 终止。
+                // 有 PID 且进程已不在：确定已停止，直接定论，不再要求人工确认。
+                if (interrupted) await FinalizeInterruptedAsync(task);
             }
             if (result.Errors.Count > 0) Report(string.Join("\n\n", result.Errors));
             NotifyTasks();
         });
+    }
+
+    /// <summary>
+    /// 任务被中断：进程已确认不存在或无法追踪。直接判定终态并清理记录，
+    /// 不进入 unknown，也不需要用户点“重新检查”。
+    /// </summary>
+    /// <summary>
+    /// 取任务的执行层进程身份。记录里的 PID 优先（进程启动时就写盘，最准）；
+    /// 记录下来之前应用就崩溃时，回退到 worker 自己写的 worker.pid。
+    /// </summary>
+    private (int Pid, DateTimeOffset StartedAt) ResolveProcessIdentity(TaskRecord record)
+    {
+        if (record.WorkerPid > 0) return (record.WorkerPid, record.WorkerStartedAt);
+        var jobDirectory = Path.Combine(record.Request.StateDirectory, "jobs", record.Request.JobId);
+        var path = Path.Combine(jobDirectory, "worker.pid");
+        try
+        {
+            if (!File.Exists(path)) return (0, default);
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            var root = document.RootElement;
+            var pid = root.TryGetProperty("pid", out var pidNode) && pidNode.TryGetInt32(out var parsed) ? parsed : 0;
+            var started = root.TryGetProperty("startedAt", out var startedNode) && startedNode.ValueKind == System.Text.Json.JsonValueKind.String
+                && DateTimeOffset.TryParse(startedNode.GetString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedAt)
+                ? parsedAt : default;
+            // 读不到启动时刻就只能按 PID 判活，并接受 PID 复用带来的误判风险。
+            return (pid, started);
+        }
+        catch (IOException) { return (0, default); }
+        catch (UnauthorizedAccessException) { return (0, default); }
+        catch (System.Text.Json.JsonException) { return (0, default); }
+    }
+
+    private async Task FinalizeInterruptedAsync(CompressionTaskViewModel task)
+    {
+        task.Message = "上次任务已中断：执行进程已退出，未写出终态。";
+        task.ResultSummary = "任务已中断";
+        task.Apply(new()
+        {
+            JobId = task.JobId, Type = "finished", State = "cancelled",
+            Message = task.Message
+        });
+        if (task.TerminalConfirmed) await FinalizeTaskAsync(task, remove: true);
     }
     public async Task<CompressionTaskViewModel?> StartAsync(Attachment? owner, WorkerRequest request, int engineIndex)
     {
@@ -399,6 +481,78 @@ public sealed class TaskCoordinator
         });
         await Task.WhenAll(snapshot.Select(t => t.IsUnknown ? InspectTaskAsync(t) : CancelTaskAsync(t)));
         await Task.WhenAll(snapshot.Select(t => t.Execution ?? Task.CompletedTask));
+    }
+
+    /// <summary>
+    /// 强制关闭：杀掉全部未结束任务的执行层进程树，清理暂存目录，写完终态并删除记录。
+    /// 杀不掉的任务保留记录并以 PID 标注，下次启动靠进程探测定论，绝不谎称已停止。
+    /// </summary>
+    public async Task<ForceCloseReport> ForceCloseAsync()
+    {
+        CompressionTaskViewModel[] snapshot = [];
+        await UpdateTasksAsync(() =>
+        {
+            snapshot = Tasks.Where(t => !t.TerminalConfirmed).ToArray();
+            // 排队等待者先取消令牌，避免杀进程期间有任务从队列里溜出来启动。
+            foreach (var task in snapshot.Where(t => !t.RunDispatched)) task.QueueCancellation.Cancel();
+            return Task.CompletedTask;
+        });
+
+        var terminated = 0;
+        var unconfirmed = 0;
+        var cleanupErrors = new List<string>();
+        foreach (var task in snapshot)
+        {
+            var stopped = await TerminateAsync(task);
+            if (!stopped)
+            {
+                unconfirmed++;
+                await UpdateTasksAsync(async () =>
+                {
+                    task.State = "unknown";
+                    task.Message = "强制关闭未能确认进程停止，记录已保留；下次启动会据进程状态自动定论。";
+                    try { await taskStore.SaveAsync(Record(task, "running")); task.PersistedPhase = "running"; }
+                    catch (Exception ex) { task.Message += $"\n记录无法保存：{ex.Message}"; }
+                    MirrorTask(task);
+                });
+                continue;
+            }
+            terminated++;
+            cleanupErrors.AddRange(StagingCleaner.Clean(task.OutputPath, task.JobId));
+            await UpdateTasksAsync(async () =>
+            {
+                task.QueueCancellation.Cancel();
+                task.Apply(new()
+                {
+                    JobId = task.JobId, Type = "finished", State = "cancelled",
+                    Message = "窗口关闭，任务已强制终止。"
+                });
+                await FinalizeTaskAsync(task, remove: true);
+                MirrorTask(task);
+            });
+        }
+        return new ForceCloseReport(terminated, unconfirmed, cleanupErrors);
+    }
+
+    /// <summary>
+    /// 终止单个任务的执行层进程。测试替身没有实现 <see cref="IWorkerTracker"/> 时退化为优雅取消，
+    /// 保持既有单窗口行为不变。
+    /// </summary>
+    private async Task<bool> TerminateAsync(CompressionTaskViewModel task)
+    {
+        if (worker is not IWorkerTracker tracker)
+        {
+            // 没有终止能力：发取消标志并在限期内等任务自己收尾。
+            if (task.TerminalConfirmed) return true;
+            if (!task.RunDispatched) return true;
+            await CancelTaskAsync(task);
+            var finished = await Task.WhenAny(
+                task.Execution ?? Task.CompletedTask,
+                Task.Delay(TimeSpan.FromSeconds(10)));
+            return task.TerminalConfirmed;
+        }
+        var ok = await tracker.TerminateAsync(task.JobId, task.WorkerPid, task.WorkerStartedAt);
+        return ok;
     }
     public void Apply(WorkerEvent e) => _ = UpdateTasksAsync(async () =>
     {

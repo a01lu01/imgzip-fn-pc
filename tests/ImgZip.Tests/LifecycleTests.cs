@@ -279,6 +279,154 @@ static class LifecycleTests
             worker.Finish(jobB, "succeeded"); await runB;
             Check(coordinator.Get(jobB) is null, "Finished task was not removed from the shared pool");
         });
+        await test("staging cleaner removes only the closed job's directories", async () =>
+        {
+            var output = Path.Combine(scratch, "staging", "output");
+            Directory.CreateDirectory(output);
+            var jobId = Guid.NewGuid().ToString("N");
+            var otherJob = Guid.NewGuid().ToString("N");
+            foreach (var suffix in new[] { "b1", "b2" })
+            {
+                var staging = Path.Combine(output, $".imgzip-{jobId}-{suffix}");
+                Directory.CreateDirectory(staging);
+                await File.WriteAllTextAsync(Path.Combine(staging, "partial.bin"), "half-written");
+            }
+            var foreign = Path.Combine(output, $".imgzip-{otherJob}-b1");
+            Directory.CreateDirectory(foreign);
+            await File.WriteAllTextAsync(Path.Combine(foreign, "partial.bin"), "other job");
+            var failures = StagingCleaner.Clean(output, jobId);
+            Check(failures.Count == 0, "Staging cleaner reported a failure for an owned directory");
+            Check(!Directory.Exists(Path.Combine(output, $".imgzip-{jobId}-b1")) && !Directory.Exists(Path.Combine(output, $".imgzip-{jobId}-b2")),
+                "Staging cleaner left a directory of the closed job");
+            Check(Directory.Exists(foreign) && File.Exists(Path.Combine(foreign, "partial.bin")), "Staging cleaner deleted another job's staging directory");
+        });
+        await test("recovery treats a dead recorded process as interrupted", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-dead"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var record = new TaskRecord
+            {
+                Request = new() { Sources = [Path.Combine(scratch, "force-dead.jpg")], StateDirectory = config.DirectoryPath },
+                Phase = "running", WorkerPid = 999999, WorkerStartedAt = DateTimeOffset.UtcNow
+            };
+            await disk.SaveAsync(record);
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(false));
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            Check(vm.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Dead recorded process neither finalized nor removed");
+            Check(worker.Runs.Count == 0, "Dead recorded process was relaunched");
+            Check(!Directory.EnumerateFiles(Path.Combine(config.DirectoryPath, "tasks"), "*.json").Any(), "Interrupted record was not cleaned up");
+        });
+        await test("recovery adopts a live recorded process and keeps its slot", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-alive"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var record = new TaskRecord
+            {
+                Request = new() { Sources = [Path.Combine(scratch, "force-alive.jpg")], StateDirectory = config.DirectoryPath },
+                Phase = "running", WorkerPid = 12345, WorkerStartedAt = DateTimeOffset.UtcNow
+            };
+            await disk.SaveAsync(record);
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(true));
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            var adopted = vm.Tasks.Single();
+            Check(adopted.JobId == record.Request.JobId && adopted.State == "running", "Live recorded process was not adopted as running");
+            var run = await Start(vm, "force-alive-queued");
+            await Task.Delay(350);
+            Check(worker.Runs.Count == 0, "A new task started while the adopted task held the only PC slot");
+            var queued = vm.Tasks.Single(t => t.JobId != record.Request.JobId);
+            Check(queued.IsQueued, "Adopted task released its slot");
+            await vm.CancelTaskAsync(queued); await run;
+        });
+        await test("recovery without a process identity stays unknown and holds its slot", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-nopid"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var record = new TaskRecord
+            {
+                Request = new() { Sources = [Path.Combine(scratch, "force-nopid.jpg")], StateDirectory = config.DirectoryPath },
+                Phase = "running", WorkerPid = 0
+            };
+            await disk.SaveAsync(record);
+            var worker = new ControlledWorker();
+            var vm = new MainViewModel(worker, config, "fixture"); await vm.InitializeAsync();
+            var unresolved = vm.Tasks.Single();
+            Check(unresolved.State == "unknown" && unresolved.CanInspect, "Record without a process identity was not kept for inspection");
+            var run = await Start(vm, "force-nopid-queued");
+            await Task.Delay(350);
+            Check(worker.Runs.Count == 0 && vm.Tasks.Any(t => t.IsQueued), "Unresolved task released its slot");
+            await vm.CancelTaskAsync(vm.Tasks.Single(t => t.IsQueued)); await run;
+        });
+        await test("force close retains records when termination is unconfirmed", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-unconfirmed"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new StoppableWorker { TerminateSucceeds = false };
+            var coordinator = new TaskCoordinator(worker, disk);
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            var run = await Start(vm, "force-unconfirmed");
+            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
+            var task = vm.Tasks.Single();
+            var report = await vm.ForceCloseAsync();
+            var saved = Wire.Decode<TaskRecord>(await File.ReadAllTextAsync(Path.Combine(config.DirectoryPath, "tasks", task.JobId + ".json")));
+            Check(report.Unconfirmed == 1 && report.Terminated == 0 && !report.FullyStopped, "Unconfirmed termination was reported as stopped");
+            Check(worker.Terminated.Count == 1 && worker.Terminated[0] == task.JobId, "Force close did not ask the tracker to terminate the job");
+            Check(task.State == "unknown" && task.IsUnknown, "Unconfirmed task was presented as resolved");
+            Check(saved.Phase == "running" && saved.WorkerPid == StoppableWorker.ProcessIdentifier, "Retained record lost its running phase or process identity");
+            Check(vm.HasUnfinishedTasks, "Unconfirmed task no longer held capacity");
+            worker.Finish(task.JobId, "cancelled"); await run;
+        });
+        await test("force close deletes records when termination is confirmed", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-stopped"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new StoppableWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            var run = await Start(vm, "force-stopped");
+            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
+            var task = vm.Tasks.Single();
+            var report = await vm.ForceCloseAsync();
+            Check(report.Terminated == 1 && report.Unconfirmed == 0 && report.FullyStopped, "Confirmed termination was not reported as stopped");
+            Check(worker.Terminated.Count == 1 && worker.Terminated[0] == task.JobId, "Force close did not terminate the tracked job");
+            Check(vm.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Terminated task stayed in the pool");
+            Check(!File.Exists(Path.Combine(config.DirectoryPath, "tasks", task.JobId + ".json")), "Terminated task record was retained");
+            worker.Finish(task.JobId, "cancelled"); await run;
+        });
+        await test("force close terminates an adopted process by its recorded pid", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-adopted"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var record = new TaskRecord
+            {
+                Request = new() { Sources = [Path.Combine(scratch, "force-adopted.jpg")], StateDirectory = config.DirectoryPath },
+                Phase = "running", WorkerPid = 12345, WorkerStartedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+            };
+            await disk.SaveAsync(record);
+            var worker = new StoppableWorker { TerminateSucceeds = true };
+            var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(true));
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            var adopted = vm.Tasks.Single();
+            Check(adopted.JobId == record.Request.JobId && adopted.State == "running", "Recorded process was not adopted as running before force close");
+            var report = await vm.ForceCloseAsync();
+            Check(report.Terminated == 1 && report.Unconfirmed == 0, "Adopted process termination was not reported as stopped");
+            // 核心：本进程没有该进程的句柄，PID 必须由记录传下去，否则 TerminateAsync 无从下手。
+            Check(worker.TerminatedPids.Contains(record.WorkerPid), "Force close did not pass the recorded pid to TerminateAsync");
+            Check(worker.Terminated.Contains(adopted.JobId), "Force close did not terminate the adopted job");
+            Check(!Directory.EnumerateFiles(Path.Combine(config.DirectoryPath, "tasks"), "*.json").Any(), "Adopted task record survived a confirmed force close");
+        });
     }
 
     private sealed class ControlledWorker : IWorkerClient
@@ -321,6 +469,44 @@ static class LifecycleTests
         {
             if (FailDelete) throw new IOException("Fixture delete failure");
             Deletes++; return inner.DeleteAsync(id);
+        }
+    }
+    private sealed class FixedProbe(bool alive) : IProcessProbe
+    {
+        public bool IsAlive(int processId, DateTimeOffset startedAt) => alive;
+    }
+    /// <summary>可终止的测试执行层：能报告进程身份，TerminateAsync 的确认结果可切换。</summary>
+    private sealed class StoppableWorker : IWorkerClient, IWorkerTracker
+    {
+        public const int ProcessIdentifier = 24680;
+        public List<WorkerRequest> Runs { get; } = [];
+        public List<string> Terminated { get; } = [];
+        /// <summary>最近一次终止请求携带的 PID；用于确认接管路径把记录里的 PID 传了下来。</summary>
+        public List<int> TerminatedPids { get; } = [];
+        public bool TerminateSucceeds { get; init; } = true;
+        private readonly Dictionary<string, TaskCompletionSource<string>> results = new(StringComparer.Ordinal);
+        public event Action<string, int, DateTimeOffset>? ProcessStarted;
+        public void Finish(string id, string state) => results[id].TrySetResult(state);
+        public Task<bool> TerminateAsync(string jobId, int processId, DateTimeOffset startedAt)
+        {
+            Terminated.Add(jobId); TerminatedPids.Add(processId);
+            return Task.FromResult(TerminateSucceeds);
+        }
+        public async Task ExecuteAsync(WorkerRequest request, Action<WorkerEvent> emit)
+        {
+            if (request.Operation == "probe") { emit(new() { JobId = request.JobId, Type = "probe", PcAvailable = true }); return; }
+            if (request.Operation == "cancel")
+            {
+                emit(new() { JobId = request.JobId, Type = "cancelRequested" });
+                Finish(request.JobId, "cancelled"); return;
+            }
+            if (request.Operation == "inspect") { emit(new() { JobId = request.JobId, Type = "finished", State = "succeeded" }); return; }
+            results[request.JobId] = new(TaskCreationOptions.RunContinuationsAsynchronously); Runs.Add(request);
+            // 模拟 worker 报告自己的进程身份；强制关闭的“保留并标注”依赖这条链路写盘。
+            ProcessStarted?.Invoke(request.JobId, ProcessIdentifier, DateTimeOffset.UtcNow);
+            emit(new() { JobId = request.JobId, Type = "manifest", Total = 1 });
+            var state = await results[request.JobId].Task;
+            emit(new() { JobId = request.JobId, Type = "finished", State = state, Total = 1, Completed = state == "succeeded" ? 1 : 0, Succeeded = state == "succeeded" ? 1 : 0 });
         }
     }
 }
