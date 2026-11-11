@@ -24,6 +24,11 @@ public interface ITaskStore
     Task<TaskRecovery> LoadAsync();
     Task SaveAsync(TaskRecord record);
     Task DeleteAsync(string jobId);
+    /// <summary>
+    /// 记录所在的用户数据目录。用于定位同级的 <c>jobs/</c>。
+    /// 默认实现返回 null，测试替身不必实现；返回 null 时相关清理静默跳过。
+    /// </summary>
+    string? DirectoryPath => null;
 }
 
 public sealed class TaskStore(string directory) : ITaskStore
@@ -31,6 +36,7 @@ public sealed class TaskStore(string directory) : ITaskStore
     // 共享协调者后，多个窗口会并发写同一批记录；ConfigStore 有同样的 gate，这里此前缺失。
     // LoadAsync 内部会调用 SaveCoreAsync，故用 reentrant 标志避免自锁。
     private readonly SemaphoreSlim gate = new(1, 1);
+    public string DirectoryPath => directory;
     private string TasksPath => Path.Combine(directory, "tasks");
     private string RecordPath(string id)
     {

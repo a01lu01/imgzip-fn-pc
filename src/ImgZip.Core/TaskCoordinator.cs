@@ -206,7 +206,12 @@ public sealed class TaskCoordinator
                     { PersistedPhase = "finished", WorkerPid = record.WorkerPid, WorkerStartedAt = record.WorkerStartedAt };
                     foreach (var failure in record.Failures) done.Failures.Add(failure);
                     done.Apply(confirmed);
-                    if (done.TerminalConfirmed) { await taskStore.DeleteAsync(done.JobId); continue; }
+                    if (done.TerminalConfirmed)
+                    {
+                        await taskStore.DeleteAsync(done.JobId);
+                        JobDirectories.Clean(done.Request.StateDirectory, done.JobId);
+                        continue;
+                    }
                 }
                 // 先判定状态再登记：镜像回调在登记时读取 State，晚设置会让窗口显示成“排队中”。
                 var queued = record.Phase == "queued";
@@ -234,9 +239,14 @@ public sealed class TaskCoordinator
                 if (interrupted) await FinalizeInterruptedAsync(task);
             }
             if (result.Errors.Count > 0) Report(string.Join("\n\n", result.Errors));
+            // 任务目录的历史残留一并收掉：没有对应记录就说明那个任务早已收尾或从未落盘。
+            JobDirectories.Sweep(stateDirectory);
             NotifyTasks();
         });
     }
+
+    /// <summary>记录所在的用户数据目录；测试替身未暴露时为 null，相关清理静默跳过。</summary>
+    private string? stateDirectory => taskStore.DirectoryPath;
 
     /// <summary>
     /// 任务被中断：进程已确认不存在或无法追踪。直接判定终态并清理记录，
@@ -431,6 +441,8 @@ public sealed class TaskCoordinator
         {
             await taskStore.DeleteAsync(task.JobId);
             task.Finalized = true;
+            // 记录删掉后任务目录就没有读者了：取消标志与 worker.pid 都只服务于这台任务本身。
+            JobDirectories.Clean(task.Request.StateDirectory, task.JobId);
         }
         catch (Exception ex)
         {

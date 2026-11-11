@@ -427,6 +427,63 @@ static class LifecycleTests
             Check(worker.Terminated.Contains(adopted.JobId), "Force close did not terminate the adopted job");
             Check(!Directory.EnumerateFiles(Path.Combine(config.DirectoryPath, "tasks"), "*.json").Any(), "Adopted task record survived a confirmed force close");
         });
+        await test("job directory is removed when its task finishes", async () =>
+        {
+            var (vm, worker, config, _) = await Model("job-clean");
+            var run = await Start(vm, "job-clean");
+            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
+            var jobs = Path.Combine(config.DirectoryPath, "jobs");
+            var jobDirectory = Path.Combine(jobs, worker.Runs[0].JobId);
+            Directory.CreateDirectory(jobDirectory);
+            await File.WriteAllTextAsync(Path.Combine(jobDirectory, "worker.pid"), Wire.Encode(new { pid = 4321, startedAt = DateTimeOffset.UtcNow }));
+            await File.WriteAllTextAsync(Path.Combine(jobDirectory, "cancel"), "cancel");
+            // 另一个任务的目录没有参与本次收尾，必须原样保留。
+            var unrelated = Path.Combine(jobs, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(unrelated);
+            await File.WriteAllTextAsync(Path.Combine(unrelated, "worker.pid"), "{}");
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await run;
+            Check(!Directory.Exists(jobDirectory), "Finished task left its job directory behind");
+            Check(Directory.Exists(unrelated), "Finished task deleted another job's directory");
+        });
+        await test("job directory survives an unconfirmed force close", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "job-unconfirmed"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new StoppableWorker { TerminateSucceeds = false };
+            var coordinator = new TaskCoordinator(worker, disk);
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            var run = await Start(vm, "job-unconfirmed");
+            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
+            var jobId = vm.Tasks.Single().JobId;
+            var jobDirectory = Path.Combine(config.DirectoryPath, "jobs", jobId);
+            Directory.CreateDirectory(jobDirectory);
+            await File.WriteAllTextAsync(Path.Combine(jobDirectory, "worker.pid"),
+                Wire.Encode(new { pid = StoppableWorker.ProcessIdentifier, startedAt = DateTimeOffset.UtcNow }));
+            var report = await vm.ForceCloseAsync();
+            Check(report.Unconfirmed == 1, "Unconfirmed termination was reported as stopped");
+            // worker.pid 是下次启动判定死活的最后证据，未确认终止时不得删除。
+            Check(File.Exists(Path.Combine(jobDirectory, "worker.pid")), "Unconfirmed force close deleted the job directory");
+            worker.Finish(jobId, "cancelled"); await run;
+        });
+        await test("startup sweep removes job directories without records", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "job-sweep"));
+            Directory.CreateDirectory(config.DirectoryPath);
+            var jobs = Path.Combine(config.DirectoryPath, "jobs");
+            var orphan = Guid.NewGuid().ToString("N");
+            var tracked = Guid.NewGuid().ToString("N");
+            foreach (var name in new[] { orphan, tracked, "not-a-hex-id" }) Directory.CreateDirectory(Path.Combine(jobs, name));
+            var tasks = Path.Combine(config.DirectoryPath, "tasks"); Directory.CreateDirectory(tasks);
+            // Sweep 只按文件名检查记录是否存在，内容无须是合法记录。
+            await File.WriteAllTextAsync(Path.Combine(tasks, tracked + ".json"), "{}");
+            var removed = JobDirectories.Sweep(config.DirectoryPath);
+            Check(removed == 1, $"Startup sweep removed {removed} job directories instead of 1");
+            Check(!Directory.Exists(Path.Combine(jobs, orphan)), "Startup sweep kept a job directory without a record");
+            Check(Directory.Exists(Path.Combine(jobs, tracked)), "Startup sweep deleted a job directory that still has a record");
+            Check(Directory.Exists(Path.Combine(jobs, "not-a-hex-id")), "Startup sweep deleted a directory with an invalid job id");
+        });
     }
 
     private sealed class ControlledWorker : IWorkerClient

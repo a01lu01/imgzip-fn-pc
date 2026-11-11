@@ -6,10 +6,8 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = $utf8
 [Console]::OutputEncoding = $utf8
 $request = $null
-$journal = $null
 $workerPidFile = $null
 $workerStartedAt = $null
-$recordEvents = $false
 $lastTerminal = $false
 $remoteMayBeRunning = $false
 $terminationUnconfirmed = $false
@@ -20,7 +18,6 @@ function Emit {
     $Event.version = 1; $Event.jobId = $request.jobId
     if ($Event.type -eq 'finished') { $script:lastTerminal = $true }
     $line = ConvertTo-Json -InputObject $Event -Depth 15 -Compress
-    if ($recordEvents -and $journal) { [IO.File]::AppendAllText($journal, $line + "`n", $utf8) }
     [Console]::Out.WriteLine($line); [Console]::Out.Flush()
 }
 function Finish {
@@ -467,7 +464,6 @@ try {
     $request = ConvertFrom-Json -InputObject $line
     Check-Request
     $jobDirectory = Join-Path (Join-Path $request.stateDirectory 'jobs') $request.jobId
-    $journal = Join-Path $jobDirectory 'events.jsonl'
     $cancelFile = Join-Path $jobDirectory 'cancel'
     if ($request.operation -eq 'probe') {
         if ($request.engine -eq 'pc') {
@@ -489,14 +485,41 @@ try {
         else { foreach ($path in (Select-LocalSources)) { Emit @{type='resolved';path=$path} } }
     } elseif ($request.operation -eq 'inspect') {
         if ($request.engine -eq 'nas') { Invoke-Remote 'inspect' -Stream }
-        elseif (Test-Path -LiteralPath $journal) {
-            foreach ($saved in [IO.File]::ReadAllLines($journal)) {
-                try { $event=ConvertFrom-Json $saved } catch { continue }
-                [Console]::Out.WriteLine($saved)
-                if ($event.type -eq 'finished') { $lastTerminal=$true }
+        else {
+            # 事件日志已停写，状态只能看任务目录里的进程身份：进程还在就是 unknown；
+            # 进程消失且用户请求过取消，才是有证据的 cancelled；其余一律 unknown。
+            $workerPidFile = Join-Path $jobDirectory 'worker.pid'
+            if (-not (Test-Path -LiteralPath $workerPidFile -PathType Leaf)) {
+                Finish 'unknown' '找不到任务记录，无法确认状态。'
+            } else {
+                $recordedPid = 0; $recordedStart = ''
+                try {
+                    $identity = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($workerPidFile))
+                    $recordedPid = [int]$identity.pid
+                    $recordedStart = [string]$identity.startedAt
+                } catch { }
+                if ($recordedPid -le 0) { Finish 'unknown' '任务记录损坏，无法确认状态。' }
+                else {
+                    # 读不到进程、进程已退出、PID 已被复用都算死了；任何不确定一律按还活着处理，绝不谎称终态。
+                    $alive = $true
+                    $process = Get-Process -Id $recordedPid -ErrorAction SilentlyContinue
+                    if (-not $process) { $alive = $false }
+                    else {
+                        try { if ($process.HasExited) { $alive = $false } } catch { }
+                        if ($alive -and $recordedStart) {
+                            # PID 会被复用：现进程启动时间与记录相差超过 2 秒，说明它并不是原来那个进程。
+                            try {
+                                $startedAt = [DateTimeOffset]::Parse($recordedStart, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                                if ([Math]::Abs(($process.StartTime.ToUniversalTime() - $startedAt.UtcDateTime).TotalSeconds) -gt 2) { $alive = $false }
+                            } catch { }
+                        }
+                    }
+                    if ($alive) { Finish 'unknown' '任务进程仍在运行，尚未确认结束。' }
+                    elseif (Test-Path -LiteralPath $cancelFile) { Finish 'cancelled' '任务已按请求停止。' }
+                    else { Finish 'unknown' '任务进程已退出，未写出终态。' }
+                }
             }
-            if (-not $lastTerminal) { Finish 'unknown' '任务尚未确认结束，请稍后重新检查。' }
-        } else { Finish 'unknown' '找不到任务记录，无法确认状态。' }
+        }
     } elseif ($request.operation -eq 'cancel') {
         for ($attempt=0; $attempt -lt 50 -and -not (Test-Path -LiteralPath $jobDirectory); $attempt++) { Start-Sleep -Milliseconds 100 }
         if (Test-Path -LiteralPath $jobDirectory) { [IO.File]::WriteAllText($cancelFile,'cancel',$utf8) }
@@ -517,7 +540,6 @@ try {
         $workerStartedAt = ''
         try { $workerStartedAt = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('O', [System.Globalization.CultureInfo]::InvariantCulture) } catch { }
         try { [IO.File]::WriteAllText($workerPidFile, (ConvertTo-Json -InputObject @{pid=$PID;startedAt=$workerStartedAt} -Compress), $utf8) } catch { }
-        $recordEvents=$true
         if ($request.engine -eq 'pc') { Run-Local }
         else {
             Emit @{type='phase';state='preparing';message='正在解析 NAS 共享路径'}
