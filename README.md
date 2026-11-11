@@ -4,7 +4,7 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 
 底层压缩内核为 [caesium-clt](https://github.com/Lymphatus/caesium-clt)（libcaesium，支持 JPEG/PNG/WebP/GIF）。界面为 WinUI 3 + C#（.NET 10），随安装包自带 PC 引擎与运行依赖。
 
-当前源码版本 **0.3.6**：文件夹压缩可选择把未被压缩的其他普通文件复制到输出目录，支持递归、隐藏文件、时间属性保留、独立进度和严格失败统计。新增 43 组 C# / PowerShell 检查，以及 NAS 并发与复制脚本测试；详见 [0.3.6 功能记录](docs/FEATURES-0.3.6-copy-other-files.md)。
+当前源码版本 **0.4.0**：点 X 直接强制关闭，不再询问。关闭时终止运行中任务的执行层进程树（含引擎子进程）、清理暂存目录并写入终态；杀不掉时保留记录与进程身份，下次启动按 PID 自动定论，不再要求手动“重新检查”。同时停止写任务事件日志，任务目录随任务收尾回收，不再无限累积。详见 [强制关闭设计](docs/FEATURES-force-close.md) 与 [任务目录回收](docs/FEATURES-job-directory-reclaim.md)。
 
 ## 功能
 
@@ -29,17 +29,20 @@ Windows 上的图片批量压缩工具，双引擎：**本机 PC** 与 **fnOS / 
 
 1. .NET SDK **10.0.400**（由根目录 `global.json` 锁定）
 2. PowerShell 7
-3. Inno Setup **7.1.0**，或用 `-BootstrapCompiler` 让脚本下载校验固定版本
+3. Inno Setup **7.1.0**，或用 `-BootstrapCompiler` 让脚本下载校验固定版本；也可用 `-CompilerPath` 指向已有的 `ISCC.exe`
 
 ```powershell
-# 已安装 Inno Setup 7.1.0
+# 已安装 Inno Setup 7.1.0（在 PATH 或默认安装位置）
 pwsh -NoProfile -File build/windows.ps1
 
 # 或由脚本下载编译器
 pwsh -NoProfile -File build/windows.ps1 -BootstrapCompiler
 
+# 或用已有编译器（脚本不会重复下载）
+pwsh -NoProfile -File build/windows.ps1 -CompilerPath .tools/inno/ISCC.exe
+
 # 只想跳过非 UI 测试
-pwsh -NoProfile -File build/windows.ps1 -BootstrapCompiler -SkipTests
+pwsh -NoProfile -File build/windows.ps1 -CompilerPath .tools/inno/ISCC.exe -SkipTests
 ```
 
 脚本依次运行测试、锁定模式还原、目录形式自包含发布、下载并校验 caesium-clt 1.4.0、检查引擎可启动、编译安装程序。细节与产物路径见 [Windows 说明](docs/WINDOWS.md)。
@@ -69,7 +72,7 @@ pwsh -NoProfile -File build/windows.ps1 -BootstrapCompiler -SkipTests
 
 “复制其他文件”只对选择单个文件夹时生效。勾选后，图片仍按预设压缩；其他普通文件在图片处理完成后复制到同一输出目录。该选项包括隐藏/系统文件和 `Thumbs.db`，但跳过符号链接、重解析点和空目录。列表中的勾选状态会保存在本机配置中。
 
-排队任务可“移除”，移除后不会再调用压缩引擎。0.3.4 新记录中明确尚未启动的任务，重开后显示“等待手动继续”，可“继续”或“移除”，不会自动压缩。已启动但状态未知的任务继续占用对应引擎名额，确认结束后才释放；旧记录无法证明未启动时也按待检查恢复。关闭窗口时，“取消并等待”处理全部任务，无法确认停止时保留窗口和任务记录。
+排队任务可“移除”，移除后不会再调用压缩引擎。0.3.4 新记录中明确尚未启动的任务，重开后显示“等待手动继续”，可“继续”或“移除”，不会自动压缩。进程已确认退出的任务在重开时自动判定中断并释放名额，无需人工重新检查。关闭窗口（点 X）直接强制关闭：终止全部未结束任务的执行层进程树、清理暂存目录并写入终态，不弹对话框；无法确认停止时保留记录与进程身份，下次启动按进程状态自动定论。
 
 ## NAS 引擎准备
 
@@ -90,6 +93,8 @@ NAS 侧需要 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk
 - [检查与验收](docs/VALIDATION.md)
 - [界面设计](docs/DESIGN-A.md)
 - [0.3.6 其他文件复制](docs/FEATURES-0.3.6-copy-other-files.md)
+- [强制关闭：点 X 直接终止执行层](docs/FEATURES-force-close.md)
+- [任务目录回收](docs/FEATURES-job-directory-reclaim.md)
 - [引擎默认选择（已记录，未实施）](docs/FEATURES-engine-mode-selection.md)
 - [一窗一任务与新建任务置前（已记录，未实施）](docs/FEATURES-one-task-per-window.md)
 - [0.3.5 NAS 并发事故与修复](docs/UI-ISSUES-0.3.5-nas-concurrency.md)
