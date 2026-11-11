@@ -144,6 +144,6 @@ if (worker is IWorkerTracker tracker) tracker.ProcessStarted += RememberProcess;
 2. ~~重启后接管的进程杀不掉~~ **已修复。** `IWorkerTracker.TerminateAsync` 现在接收 `(jobId, processId, startedAt)`：先查本会话句柄，没有则按记录里的 PID 接管终止，且校验启动时刻以排除 PID 复用。用真进程树实测：新 `WorkerClient` 实例无任何句柄，按 PID 终止耗时 27 ms，worker 与子进程均消失。
 3. **暂存清理依赖 `OutputPath` 已知。** `StagingCleaner` 用 `task.OutputPath` 当根目录（`TaskCoordinator.cs:525`）；任务还没收到过带 `output` 的事件时它是占位文本「等待开始」（`src/ImgZip.Core/CompressionTaskViewModel.cs:51`），`Clean` 静默返回，暂存目录留到下次。
 4. ~~`processes` 字典只写不读~~ **已删除。** PID 直接存在任务的 `WorkerPid` / `WorkerStartedAt` 上，不再维护平行字典。
-5. **`jobs/<jobId>` 目录不随记录删除。** `TaskStore.DeleteAsync` 只删 `tasks/<jobId>.json`（`src/ImgZip.Core/TaskStore.cs:59-65`），`worker.pid` 与 journal 一直留着。恢复判定依赖它，代价是目录会累积。
+5. ~~`jobs/<jobId>` 目录不随记录删除~~ **已修复。** 事件日志 `events.jsonl` 停写（它只服务于旧 inspect），`inspect` 改为按 `worker.pid` 判活；任务收尾删记录后立即回收目录，启动时再扫一遍删除没有对应记录的目录。未确认终止的任务保留目录——`worker.pid` 是下次判定死活的最后证据。见 [`FEATURES-job-directory-reclaim.md`](FEATURES-job-directory-reclaim.md)。
 6. **没有 PID 的记录不会自动消失。** 只有用户点「重新检查」才可能离开 `unknown`。来源是两类：0.4.0 之前的旧记录，以及记录已写 `launching`、进程尚未启动这个极窄窗口内崩溃的新记录（此时 `worker.pid` 也还没写）。
 7. **未做**启动时 `CleanAll` 调用，也**未做**把 `CleanupErrors` 显示给用户。

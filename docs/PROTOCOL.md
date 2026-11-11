@@ -16,7 +16,7 @@
 | resolve | Windows 源校验、映射盘/UNC → NAS 路径解析 |
 | run | 建立图片与其他文件清单、规划新输出目录及冲突文件名；PC 组批调用，NAS 并发单文件作业，统一逐文件/复制事件 |
 | cancel | 独立控制进程请求同 ID 任务停止；请求接受不等于停止确认 |
-| inspect | 读取同 ID 的持久事件，无法确认终态则返回 unknown |
+| inspect | PC 按 `worker.pid` 判定进程死活；NAS 查远端。无法确认终态则返回 unknown |
 
 事件均包含 `version/jobId/type`。`phase` 表示准备阶段；`manifest` 给出图片总数、其他文件复制数和输出位置；`file` 给出图片进度；`copy` 给出其他文件的 `copied/failed` 进度。累计复制状态使用 `copyTotal/copyCompleted/copied/copyFailed/copiedBytes`。`file.beforeBytes/afterBytes` 是成功图片的配对字节数；`copy.copiedBytes` 只汇总复制成功的其他文件。`output` 为实际执行端目录，NAS 可另提供经共享映射得到的 `openOutput`。
 
