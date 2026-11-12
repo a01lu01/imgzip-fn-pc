@@ -10,7 +10,7 @@
         <TextBlock Text="ImgZip · 图片压缩" FontSize="12" Foreground="{ThemeResource TextBrush}" VerticalAlignment="Center" />
       </StackPanel>
     </Border>
-    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" Visibility="{Binding ShowDraft, Converter={StaticResource BoolVisibility}}">
       <StackPanel Margin="26,18,26,18" Spacing="12">
         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
           <StackPanel Spacing="4"><TextBlock Text="图片压缩" FontSize="24" FontWeight="SemiBold" /><TextBlock Text="保留珍贵瞬间，腾出更多空间。" Style="{StaticResource SecondaryText}" /></StackPanel>
@@ -75,40 +75,35 @@
     <Border Grid.Row="2" BorderBrush="{ThemeResource BorderBrush}" BorderThickness="0,1,0,0" Background="{ThemeResource WindowBrush}" Padding="26,12">
       <Grid RowSpacing="10">
         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
-        <ScrollViewer Grid.Row="0" MaxHeight="240" VerticalScrollBarVisibility="Auto" Visibility="{Binding HasTasks, Converter={StaticResource BoolVisibility}}">
-          <ItemsControl ItemsSource="{Binding Coordinator.Tasks}">
-            <ItemsControl.ItemTemplate>
-              <DataTemplate x:DataType="core:CompressionTaskViewModel">
-                <Border Style="{StaticResource Surface}" Padding="12,10" Margin="0,0,0,8">
-                  <Grid ColumnSpacing="12">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                    <StackPanel Spacing="3">
-                      <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock Text="{Binding SourceTitle}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                        <Border Background="{ThemeResource SelectedBrush}" CornerRadius="4" Padding="6,1"><TextBlock Text="{Binding EngineName}" FontSize="10" Foreground="{ThemeResource AccentTextBrush}" /></Border>
-                        <TextBlock Text="{Binding StateTitle}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" VerticalAlignment="Center" />
-                      </StackPanel>
-                      <ProgressBar Maximum="100" Value="{Binding Progress}" IsIndeterminate="{Binding IsIndeterminate}" Visibility="{Binding IsRunning, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" />
-                      <TextBlock Text="{Binding CurrentFile}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
-                      <TextBlock Text="{Binding ConcurrencyText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
-                      <TextBlock Text="{Binding CopyProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" Visibility="{Binding HasCopyProgress, Converter={StaticResource BoolVisibility}}" />
-                      <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
-                      <TextBlock Text="{Binding Message}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasMessage, Converter={StaticResource BoolVisibility}}" />
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center" MinWidth="96">
-                      <Button Content="取消" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding CanCancel, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="继续" FontSize="11" Click="TaskResume_Click" Visibility="{Binding CanResume, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="移除" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding CanRemove, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="重新检查" FontSize="11" Click="TaskInspect_Click" IsEnabled="{Binding CanInspect}" Visibility="{Binding IsUnknown, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="打开输出" FontSize="11" Click="TaskOpen_Click" Visibility="{Binding CanOpenOutput, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                      <Button Content="失败详情" FontSize="11" Click="TaskFailures_Click" Visibility="{Binding HasFailures, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
-                    </StackPanel>
-                  </Grid>
-                </Border>
-              </DataTemplate>
-            </ItemsControl.ItemTemplate>
-          </ItemsControl>
+        <ScrollViewer Grid.Row="0" MaxHeight="240" VerticalScrollBarVisibility="Auto" Visibility="{Binding HasCurrentTask, Converter={StaticResource BoolVisibility}}">
+          <!-- 一窗一任务：窗口只呈现自己那一个任务，不再堆叠整个任务池。 -->
+          <Border Style="{StaticResource Surface}" Padding="12,10" Margin="0,0,0,8" DataContext="{Binding CurrentTask}">
+            <Grid ColumnSpacing="12">
+              <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+              <StackPanel Spacing="3">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="{Binding SourceTitle}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                  <Border Background="{ThemeResource SelectedBrush}" CornerRadius="4" Padding="6,1"><TextBlock Text="{Binding EngineName}" FontSize="10" Foreground="{ThemeResource AccentTextBrush}" /></Border>
+                  <TextBlock Text="{Binding StateTitle}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+                <ProgressBar Maximum="100" Value="{Binding Progress}" IsIndeterminate="{Binding IsIndeterminate}" Visibility="{Binding IsRunning, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" />
+                <TextBlock Text="{Binding CurrentFile}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding ConcurrencyText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding CopyProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" Visibility="{Binding HasCopyProgress, Converter={StaticResource BoolVisibility}}" />
+                <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
+                <TextBlock Text="{Binding Message}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasMessage, Converter={StaticResource BoolVisibility}}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center" MinWidth="96">
+                <Button Content="取消" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding CanCancel, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                <Button Content="继续" FontSize="11" Click="TaskResume_Click" Visibility="{Binding CanResume, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                <Button Content="移除" FontSize="11" Click="TaskCancel_Click" Visibility="{Binding CanRemove, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                <Button Content="重新检查" FontSize="11" Click="TaskInspect_Click" IsEnabled="{Binding CanInspect}" Visibility="{Binding IsUnknown, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                <Button Content="打开输出" FontSize="11" Click="TaskOpen_Click" Visibility="{Binding CanOpenOutput, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+                <Button Content="失败详情" FontSize="11" Click="TaskFailures_Click" Visibility="{Binding HasFailures, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
+              </StackPanel>
+            </Grid>
+          </Border>
         </ScrollViewer>
         <Grid Grid.Row="1" ColumnSpacing="16">
           <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -116,7 +111,7 @@
             <TextBlock Text="{Binding TaskSummary}" FontSize="13" FontWeight="SemiBold" />
             <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
           </StackPanel>
-          <Button Grid.Column="1" Content="{Binding StartText}" Style="{StaticResource AccentButtonStyle}" IsEnabled="{Binding CanStartTask}" Click="Start_Click" MinWidth="132" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="{Binding StartText}" Style="{StaticResource AccentButtonStyle}" IsEnabled="{Binding CanStartTask}" Click="Start_Click" MinWidth="132" VerticalAlignment="Center" Visibility="{Binding ShowDraft, Converter={StaticResource BoolVisibility}}" />
         </Grid>
       </Grid>
     </Border>

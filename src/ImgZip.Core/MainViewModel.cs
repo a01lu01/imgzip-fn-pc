@@ -87,6 +87,15 @@ public partial class MainViewModel : ObservableObject
     public bool HasUnfinishedTasks => Coordinator.HasUnfinishedTasks;
     /// <summary>本窗口是否还有一个未结束的任务。窗口的关闭守卫与"运行中"判断都基于它。</summary>
     public bool CurrentTaskUnfinished => CurrentTask is { TerminalConfirmed: false };
+    /// <summary>本窗口是否已经承办了一个任务（已提交或已恢复）。</summary>
+    public bool HasCurrentTask => CurrentTask is not null;
+    /// <summary>草稿里是否已经有来源。双击启动时用来判断「这个空白窗口还能不能复用」。</summary>
+    public bool HasSources => sources.Length > 0;
+    /// <summary>
+    /// 草稿区是否还可用。窗口是单次使用的：一旦承办了任务就不再接受新来源，
+    /// 否则「一窗一任务」会退化成「一窗一串任务」，又回到多任务挤在一处的问题。
+    /// </summary>
+    public bool ShowDraft => CurrentTask is null;
     public bool CanStart => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
     /// <summary>草稿是否可启动新任务：多任务下不再受“运行中”限制。</summary>
     public bool CanStartTask => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
@@ -160,7 +169,7 @@ public partial class MainViewModel : ObservableObject
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(HasCurrentTask), nameof(ShowDraft), nameof(HasSources), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
     private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks)); OnPropertyChanged(nameof(CurrentTaskUnfinished)); }
 

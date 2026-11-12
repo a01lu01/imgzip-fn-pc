@@ -498,13 +498,14 @@ public sealed class TaskCoordinator
     /// <summary>
     /// 强制关闭：杀掉全部未结束任务的执行层进程树，清理暂存目录，写完终态并删除记录。
     /// 杀不掉的任务保留记录并以 PID 标注，下次启动靠进程探测定论，绝不谎称已停止。
+    /// <paramref name="onlyJobId"/> 非空时只处理该任务——关闭单个窗口只结束它自己的任务。
     /// </summary>
-    public async Task<ForceCloseReport> ForceCloseAsync()
+    public async Task<ForceCloseReport> ForceCloseAsync(string? onlyJobId = null)
     {
         CompressionTaskViewModel[] snapshot = [];
         await UpdateTasksAsync(() =>
         {
-            snapshot = Tasks.Where(t => !t.TerminalConfirmed).ToArray();
+            snapshot = Tasks.Where(t => !t.TerminalConfirmed && (onlyJobId is null || t.JobId == onlyJobId)).ToArray();
             // 排队等待者先取消令牌，避免杀进程期间有任务从队列里溜出来启动。
             foreach (var task in snapshot.Where(t => !t.RunDispatched)) task.QueueCancellation.Cancel();
             return Task.CompletedTask;

@@ -5,9 +5,13 @@ using Microsoft.UI.Xaml;
 namespace ImgZip.App;
 public partial class App : Application
 {
-    private MainWindow? window;
+    // 一窗一任务：每个窗口承载一个任务草稿或结果，窗口按需创建、不重复使用。
+    private readonly List<MainWindow> windows = [];
     private InstanceBroker? broker;
     private TaskCoordinator? coordinator;
+    // 级联位置：新窗口相对上一个窗口偏移，避免完全重叠。
+    private int cascadeIndex;
+    private const int CascadeStep = 32;
     public App()
     {
         InitializeComponent();
@@ -47,18 +51,70 @@ public partial class App : Application
         var worker = new WorkerClient(shell, Path.Combine(AppContext.BaseDirectory, "worker", "imgzip-worker.ps1"));
         var store = new ConfigStore(directory);
         // 应用级单例：名额池与任务记录只此一份，所有窗口共享。
-        // 阶段 1c 仍是单窗口，因此统一使用 UI 线程的派发器。
         var dispatcher = DispatcherQueue.GetForCurrentThread();
         coordinator = new TaskCoordinator(worker, new TaskStore(directory), action => dispatcher.TryEnqueue(() => action()));
-        window = new MainWindow(worker, store, coordinator, paths);
-        window.Activate();
-        _ = broker.ListenAsync(incoming => window.DispatcherQueue.TryEnqueue(async () =>
+        // 无参数启动（双击图标）：复用已有的空白草稿窗口，避免反复双击堆出一排空窗口。
+        // 带 --path 启动则一定新开窗口：新来源归新窗口，不劫持已有草稿。
+        if (paths.Length == 0 && FindBlankDraft() is { } blank)
+        {
+            BringToFront(blank);
+        }
+        else
+        {
+            OpenWindow(worker, store, paths);
+        }
+        _ = broker.ListenAsync(incoming => dispatcher.TryEnqueue(() =>
+        {
+            // 不带路径的第二次启动（又双击了一次）：只是把用户叫回来，不建新窗口。
+            if (incoming.Length == 0 && FindBlankDraft() is { } blank) { BringToFront(blank); return; }
+            // 右键新来源：新开一个窗口承载，而不是劫持已有窗口的草稿。
+            OpenWindow(worker, store, incoming);
+        }));
+    }
+
+    /// <summary>找一个还没承办任务、也没有来源的窗口。没有就返回 null。</summary>
+    private MainWindow? FindBlankDraft() =>
+        windows.FirstOrDefault(w => w.ViewModel.ShowDraft && !w.ViewModel.HasSources);
+
+    private MainWindow OpenWindow(IWorkerClient worker, ConfigStore store, string[] paths)
+    {
+        var window = new MainWindow(worker, store, coordinator!, paths, NextCascadeOffset());
+        windows.Add(window);
+        window.Closed += (_, _) =>
+        {
+            windows.Remove(window);
+            // 关掉最后一个窗口时整个应用退出；否则只移除这个窗口，其他任务继续。
+            if (windows.Count == 0) Exit();
+        };
+        BringToFront(window);
+        return window;
+    }
+
+    private (int X, int Y)? NextCascadeOffset()
+    {
+        if (windows.Count == 0) { cascadeIndex = 0; return null; }
+        cascadeIndex = (cascadeIndex + 1) % 8;
+        return (cascadeIndex * CascadeStep, cascadeIndex * CascadeStep);
+    }
+
+    /// <summary>
+    /// 尽力把新窗口带到前面。Windows 前台锁可能只让任务栏闪烁：
+    /// 本进程不是前台进程时 SetForegroundWindow 会被系统拒绝，这属于系统行为。
+    /// </summary>
+    private static void BringToFront(MainWindow window)
+    {
+        try
         {
             window.Activate();
-            try { await window.ViewModel.SetSourcesAsync(incoming); } catch (Exception ex) { window.ViewModel.Message = ex.Message; }
-        }));
-        window.Closed += (_, _) => broker.Dispose();
+            var handle = WinRT.Interop.WindowNative.GetWindowHandle(window);
+            if (handle != IntPtr.Zero) SetForegroundWindow(handle);
+        }
+        catch { }
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
     private static string[] ParsePaths(string[] args)
     {
         var paths = new List<string>();

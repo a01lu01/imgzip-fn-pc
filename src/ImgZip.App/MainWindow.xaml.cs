@@ -22,10 +22,12 @@ public sealed partial class MainWindow : Window
     private bool synchronizingEngine;
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
-    public MainWindow(IWorkerClient worker, ConfigStore store, TaskCoordinator coordinator, string[] initialPaths)
+    private readonly (int X, int Y)? cascadeOffset;
+    public MainWindow(IWorkerClient worker, ConfigStore store, TaskCoordinator coordinator, string[] initialPaths, (int X, int Y)? cascadeOffset = null)
     {
         this.store = store;
         this.initialPaths = initialPaths;
+        this.cascadeOffset = cascadeOffset;
         ViewModel = new MainViewModel(worker, store, Path.Combine(AppContext.BaseDirectory, "bin", "caesiumclt.exe"), action => DispatcherQueue.TryEnqueue(() => action()), null, coordinator);
         InitializeComponent();
         Root.DataContext = ViewModel;
@@ -131,6 +133,12 @@ public sealed partial class MainWindow : Window
                 var h = Math.Min(saved.H, work.Height);
                 var x = Math.Clamp(saved.X, work.X, work.X + Math.Max(0, work.Width - w));
                 var y = Math.Clamp(saved.Y, work.Y, work.Y + Math.Max(0, work.Height - h));
+                // 多窗口时按级联偏移错开，避免全部叠在同一位置；超出工作区后回绕。
+                if (cascadeOffset is { } offset)
+                {
+                    x = Math.Clamp(x + offset.X, work.X, work.X + Math.Max(0, work.Width - w));
+                    y = Math.Clamp(y + offset.Y, work.Y, work.Y + Math.Max(0, work.Height - h));
+                }
                 AppWindow.MoveAndResize(new RectInt32(x, y, w, h));
                 return;
             }
@@ -138,10 +146,14 @@ public sealed partial class MainWindow : Window
             var logicalH = Math.Min(740, Math.Max(360, work.Height / scale - 40));
             var width = (int)(logicalW * scale);
             var height = (int)(logicalH * scale);
-            AppWindow.MoveAndResize(new RectInt32(
-                work.X + Math.Max(0, (work.Width - width) / 2),
-                work.Y + Math.Max(0, (work.Height - height) / 2),
-                Math.Min(width, work.Width), Math.Min(height, work.Height)));
+            var defaultX = work.X + Math.Max(0, (work.Width - width) / 2);
+            var defaultY = work.Y + Math.Max(0, (work.Height - height) / 2);
+            if (cascadeOffset is { } cascade)
+            {
+                defaultX = Math.Clamp(defaultX + cascade.X, work.X, work.X + Math.Max(0, work.Width - Math.Min(width, work.Width)));
+                defaultY = Math.Clamp(defaultY + cascade.Y, work.Y, work.Y + Math.Max(0, work.Height - Math.Min(height, work.Height)));
+            }
+            AppWindow.MoveAndResize(new RectInt32(defaultX, defaultY, Math.Min(width, work.Width), Math.Min(height, work.Height)));
         }
         catch { }
     }
@@ -264,8 +276,9 @@ public sealed partial class MainWindow : Window
     {
         SaveWindowPlacement();
         if (allowClose) { ViewModel.Attachment.Dispose(); return; }
-        // 点 X 直接强制关闭：杀进程树、清暂存、写终态。杀不掉的记录会保留并标注，下次启动据 PID 自动定论。
-        if (!ViewModel.HasUnfinishedTasks) { ViewModel.Attachment.Dispose(); return; }
+        // 点 X 直接强制关闭本窗口的任务：杀进程树、清暂存、写终态。
+        // 只结束这个窗口自己那一个任务——其他窗口的任务不受影响。
+        if (!ViewModel.CurrentTaskUnfinished) { ViewModel.Attachment.Dispose(); return; }
         args.Cancel = true;
         if (showingClose) return;
         showingClose = true;

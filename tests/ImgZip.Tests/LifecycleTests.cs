@@ -552,6 +552,94 @@ static class LifecycleTests
             worker.Finish(worker.Runs[1].JobId, "succeeded");
             await Task.WhenAll(run1, run2);
         });
+        await test("closing one window leaves the other window's task running", async () =>
+        {
+            var (vm1, worker, config, disk) = await Model("window-close-one");
+            var coordinator = vm1.Coordinator;
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm2.InitializeAsync();
+            var run1 = await Start(vm1, "wc-a"); await Until(() => worker.Runs.Count == 1);
+            var run2 = await Start(vm2, "wc-b");
+            // 第二个任务在排队（PcConcurrency=1）
+            await Until(() => vm2.CurrentTask is not null);
+            var taskB = vm2.CurrentTask!;
+            // 只关第一个窗口的任务
+            var report = await vm1.ForceCloseAsync();
+            Check(report.Terminated == 1 && report.Unconfirmed == 0, $"Window close did not terminate exactly its own task: {report.Terminated}/{report.Unconfirmed}");
+            // 第二个任务必须还活着
+            Check(coordinator.Tasks.Contains(taskB) && !taskB.TerminalConfirmed, "Closing one window killed another window's task");
+            // 第一个窗口自己的任务已经取消（关闭只作用在 CurrentTask 上，不波及其他窗口）
+            Check(vm1.CurrentTask is { State: "cancelled" }, "Own task was not cancelled");
+            // 名额随第一个任务释放：第二个窗口的排队任务应当真的启动，而不是被一起掐死。
+            await Until(() => worker.Runs.Count == 2);
+            Check(vm2.CurrentTask is { } runningB && ReferenceEquals(runningB, taskB) && !taskB.TerminalConfirmed,
+                "Other window's task did not start after its slot was released");
+            await vm2.CancelTaskAsync(taskB);
+            await Task.WhenAll(run1, run2);
+        });
+        await test("force close without a job id still stops everything", async () =>
+        {
+            // 应用退出走的是全局强制关闭：用能真正终止进程的执行层替身（生产里的 WorkerClient 实现 IWorkerTracker），
+            // 才能覆盖"杀进程 + 写终态 + 移出任务池"这条真实路径。
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "window-close-all"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new StoppableWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var vm1 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm1.InitializeAsync();
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm2.InitializeAsync();
+            var run1 = await Start(vm1, "wca-a"); await Until(() => worker.Runs.Count == 1);
+            var run2 = await Start(vm2, "wca-b");
+            await Until(() => vm2.CurrentTask is not null);
+            var report = await coordinator.ForceCloseAsync();
+            Check(report.Terminated == 2, $"Application exit did not stop every task: {report.Terminated}");
+            Check(coordinator.Tasks.Count == 0 && !coordinator.HasUnfinishedTasks, "Stopped tasks were retained");
+            // 执行层替身不会自己醒来：手动结束仍挂起的运行，两个 StartAsync 才能返回。
+            // 循环而不是一次性枚举，避免实现回退时任务从队列里溜出来把测试挂死。
+            for (var i = 0; i < 100 && !Task.WhenAll(run1, run2).IsCompleted; i++)
+            {
+                await Task.Delay(10);
+                foreach (var launched in worker.Runs.ToArray()) worker.Finish(launched.JobId, "cancelled");
+            }
+            await Task.WhenAll(run1, run2);
+        });
+        await test("window stops accepting new work once it owns a task", async () =>
+        {
+            var (vm, worker, _, _) = await Model("window-single-use");
+            Check(vm.ShowDraft && !vm.HasCurrentTask, "Fresh window should still show its draft");
+            var run = await Start(vm, "single-use-a"); await Until(() => worker.Runs.Count == 1);
+            Check(!vm.ShowDraft && vm.HasCurrentTask, "Window kept its draft after taking a task");
+            Check(vm.CurrentTaskUnfinished, "Running task was not reported as unfinished");
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await run;
+            // 任务结束后草稿区仍然收起：窗口不做第二次任务
+            Check(!vm.ShowDraft && vm.HasCurrentTask, "Window reopened its draft after the task finished");
+            Check(!vm.CurrentTaskUnfinished, "Finished task was still reported as unfinished");
+        });
+        await test("finished window reports itself idle while another window still runs", async () =>
+        {
+            // 关闭守卫用的是窗口级 CurrentTaskUnfinished，不是池级 HasUnfinishedTasks。
+            // 两者在「自己的任务结束、别人的任务还在跑」时给出相反答案——这正是关掉窗口 A
+            // 会不会误伤窗口 B 的分界线。
+            var (vm1, worker, config, disk) = await Model("window-idle-vs-busy");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, vm1.Coordinator);
+            await vm2.InitializeAsync();
+            var run1 = await Start(vm1, "idle-a"); await Until(() => worker.Runs.Count == 1);
+            var run2 = await Start(vm2, "idle-b"); await Until(() => vm2.CurrentTask is not null);
+            // 先结束 A 窗口自己的任务；PcConcurrency=1 会接着把 B 放出来
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await run1;
+            await Until(() => worker.Runs.Count == 2);
+            // A 窗口：自己的任务结束 → 自认为空闲
+            Check(!vm1.CurrentTaskUnfinished, "Finished window still reported unfinished work of its own");
+            // B 窗口的任务还在跑 → 全局确实还有未结束任务
+            Check(vm2.Coordinator.HasUnfinishedTasks, "Coordinator lost track of the running task");
+            // 关键区分：池级为真、窗口级为假。若把守卫接回池级，这条会失败。
+            Check(vm2.CurrentTaskUnfinished && !vm1.CurrentTaskUnfinished,
+                "Window-level close guard collapsed into the pool-level one");
+            worker.Finish(worker.Runs[1].JobId, "succeeded");
+            await Task.WhenAll(run1, run2);
+        });
     }
 
     private sealed class ControlledWorker : IWorkerClient
