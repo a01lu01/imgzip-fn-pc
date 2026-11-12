@@ -357,13 +357,24 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 **目标**：App 层支持多窗口，UI 一窗一任务。
 
 1. `App.xaml.cs` 的 `private MainWindow? window` 改为 `List<MainWindow> windows` + 单例 `TaskCoordinator`。
-2. `--path` 到达时新建窗口而非复用（[App.xaml.cs:48-53](../src/ImgZip.App/App.xaml.cs)）。无参数启动复用空白草稿窗口（待决问题 2）。
-3. `MainWindow.xaml` 删除 `ItemsControl ItemsSource="{Binding Coordinator.Tasks}"` 整块（[MainWindow.xaml:78-111](../src/ImgZip.App/MainWindow.xaml)），换成单任务卡片。
-4. 任务结束后草稿区收起（见「关键约束：窗口是单次使用的」）。
-5. 窗口关闭只取消本窗口任务；关最后一个窗口时检查协调者全局任务（待决问题 4）。
+2. `--path` 到达时新建窗口而非复用。无参数启动复用空白草稿窗口（待决问题 2）。
+3. `MainWindow.xaml` 删除 `ItemsControl` 整块，换成单任务卡片（`DataContext="{Binding CurrentTask}"`）。
+4. 任务结束后草稿区收起（`ShowDraft`，见「关键约束：窗口是单次使用的」）。
+5. 窗口关闭只结束本窗口任务；关最后一个窗口时退出应用（待决问题 4）。
 6. 级联窗口位置（待决问题 5）。
 
-**验收**：手工验证——同时开 3 个窗口各跑一个任务，PC 并发符合设置；关中间那个，另两个不受影响。
+**实施要点**：
+
+- `TaskCoordinator.ForceCloseAsync(string? onlyJobId = null)` 新增可选参数。传 `jobId` 只处理该任务，不传则处理全部——后者是应用退出路径，语义必须保留，否则最后一个窗口退出时会漏杀其他窗口的进程。
+- `MainWindow.Window_Closing` 的守卫从全局 `HasUnfinishedTasks` 改为窗口级 `CurrentTaskUnfinished`。用全局判据会导致「关一个还有任务的窗口，把别的窗口的任务也杀了」。
+- 无参数二次启动只置前不新建。判断依据是 `ShowDraft && !HasSources`（既没承办任务、也没有来源），否则反复双击会堆出一排空窗口。
+
+**踩到的坑**：
+
+- `App.Closed` 事件写成了 `Closed += ...`，编译报 `CS0103 名称 Closed 不存在`——那是 `Window.Closed`，`Application` 上没有。改为在 `OpenWindow` 里挂 `window.Closed`，在 `windows.Count == 0` 时 `Exit()`。
+- 编辑 XAML 会丢 BOM。`MainWindow.xaml` 原为 UTF-8 with BOM，若无 BOM，diff 里会出现整行 `-﻿<Window` → `+<Window` 的假改动。必须用 `UTF8Encoding($true)` 写回。
+
+**验收**：手动验证——同时开 3 个窗口，级联偏移生效（实测 `530,190` → `562,222` → `594,254`）；各跑一个任务，PC 并发符合设置；关中间那个，另两个不受影响。**已完成**：3 组自动化用例覆盖 jobId 隔离、全局关闭、单次使用；另加 1 组区分窗口级与池级「未结束」。
 
 ### 阶段 4：排队提示
 
@@ -415,8 +426,9 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 | 1a | ✅ 已完成，44 组通过，测试零修改 | `cc7cd43` |
 | 1b | ✅ 已完成，47 组通过（+3 共享场景） | `af5d9c3` |
 | 1c | ✅ 已完成，47 组通过 | `7b14803` |
-| 阶段 2 | ✅ 已完成，60 组通过（+3 单任务语义） | 见下文 |
-| 阶段 3-6 | 待开始 | — |
+| 阶段 2 | ✅ 已完成，60 组通过（+3 单任务语义） | `7b43e24` / `d801bab` |
+| 阶段 3 | ✅ 已完成，63 组通过（+3 窗口隔离）；实机验证多窗口、级联、单次使用 | 见下文 |
+| 阶段 4-6 | 待开始 | — |
 
 
 ## 不要一次性重写
