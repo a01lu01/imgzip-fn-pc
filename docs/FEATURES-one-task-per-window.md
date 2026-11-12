@@ -4,7 +4,7 @@
 
 ## 背景
 
-当前所有任务都放在同一个 `MainWindow` 里，用 `ItemsControl ItemsSource="{Binding Tasks}"` 堆叠展示（[MainWindow.xaml:78-111](../src/ImgZip.App/MainWindow.xaml)）。由此产生三个问题：
+当前所有任务都放在同一个 `MainWindow` 里（阶段 2 之后绑定到 `{Binding Coordinator.Tasks}`），堆叠展示（[MainWindow.xaml:78-111](../src/ImgZip.App/MainWindow.xaml)）。由此产生三个问题：
 
 1. **多任务共用一窗**，任务卡片挤在固定高度 240px 的滚动区里，多个任务同时跑时难以分辨和操作。
 2. **第二个任务不会把窗口带到前台**。右键第二个文件夹时，第二个进程经 `InstanceBroker` 把路径转发给第一个进程后退出（[App.xaml.cs:38-41](../src/ImgZip.App/App.xaml.cs)），原窗口只调用了 `Activate()`，实际效果往往只是任务栏闪烁。原因见「附录：Windows 前台锁」。
@@ -320,23 +320,37 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 
 **目标**：窗口不再持有任务集合。
 
-1. `MainViewModel.Tasks`（`ObservableCollection`）替换为单个 `CurrentTask` 属性，类型仍是 `CompressionTaskViewModel`。
-2. `TaskSummary`（[MainViewModel.cs:110](../src/ImgZip.Core/MainViewModel.cs)）从"3 个进行中 · 2 个排队 · 共 5 个任务"改为单任务描述，或直接删除。
-3. `HasUnfinishedTasks` 改为查询协调者的全局任务，语义变为"应用内是否还有未结束任务"——这与关闭最后一个窗口的判定相关（待决问题 4）。
-4. `Failures`（[:55](../src/ImgZip.Core/MainViewModel.cs)）保留但只反映当前任务。
+1. `MainViewModel.Tasks`（`ObservableCollection`）**删除**，改由协调者的 `Tasks` 承载池级集合；窗口新增 `CurrentTask`（类型仍是 `CompressionTaskViewModel`）。
+2. `TaskSummary` 从「3 个进行中 · 2 个排队 · 共 5 个任务」改为**本窗口**一句话描述（状态 · 引擎 · 并发 · 进度）。
+3. `HasUnfinishedTasks` 保持查协调者的全局任务，语义是「应用内是否还有未结束任务」——这与关闭最后一个窗口的判定相关（待决问题 4）。另新增窗口级的 `CurrentTaskUnfinished`。
+4. `Failures` 保留，只反映当前任务。
 
-**测试迁移**：这一步开始要动测试。26 处 `vm.Tasks` 映射：
+**`CurrentTask` 是粘性的**：任务结束、从池中移除后**不清空**，窗口还要用它显示结果态与「打开输出」「失败详情」。这一条决定了下面的迁移规则，漏掉会大面积假失败。
 
-| 原写法 | 新写法 |
-| --- | --- |
-| `vm.Tasks.Single()` | `vm.CurrentTask` |
-| `vm.Tasks.Any(t => t.IsQueued)` | `vm.CurrentTask?.IsQueued == true` |
-| `vm.Tasks.Count == 0` | `vm.CurrentTask is null` |
-| 需要多任务的用例 | 直接构造两个 `MainViewModel`，共享同一个 `TaskCoordinator` |
+**测试迁移**：这一步开始要动测试。实测 **49 处** `vm.Tasks` 引用（`Program.cs` 7 处 + `LifecycleTests.cs` 42 处），分布在 27 个测试。映射规则：
 
-多任务相关的用例（"PC 并发上限"、"NAS 串行"、"取消全部"）改为**显式创建多个 `MainViewModel` 实例共享协调者**——这正好是阶段 3 多窗口场景的预演，测试代码可原样保留到阶段 3。
+| 原写法 | 新写法 | 备注 |
+| --- | --- | --- |
+| `vm.Tasks.Single()` / `.Single(t => …)` | `vm.CurrentTask!` | 仅限该窗口只承办过一个任务 |
+| `vm.Tasks.Any(t => t.IsQueued)` | `vm.CurrentTask?.IsQueued == true` | 同上 |
+| `vm.Tasks.Count == 0` | **`vm.Coordinator.Tasks.Count == 0`** | **不能**写成 `CurrentTask is null`，粘性会假失败 |
+| 多任务枚举 / 恢复记录 | `vm.Coordinator.Tasks` | 恢复记录统一落到首个挂接窗口，无法分给多 VM |
+| 同一窗口提交多个任务 | 改为多个 `MainViewModel` 共享协调者 | 见下 |
 
-**验收**：43 组全过；新增 2 组"两个 `MainViewModel` 共享协调者"的用例。
+多任务相关的用例（"PC 并发上限"、"NAS 串行"、"取消全部"、"接管进程"、"无 PID 未决"）改为**显式创建多个 `MainViewModel` 实例共享协调者**——这正好是阶段 3 多窗口场景的预演，测试代码可原样保留到阶段 3。
+
+**实施次序**（分两步，避免产品代码与测试同时变导致无法归因）：
+
+1. **2a**：`MainViewModel` 新增 `CurrentTask` / `CurrentTaskUnfinished`，`Tasks` 暂时保留。57 组全过。
+2. **2b**：测试迁移到 `CurrentTask` / `Coordinator.Tasks`。57 组全过，测试名逐一不变。
+3. **2c**：删除 `MainViewModel.Tasks`，`HasTasks` / `TaskSummary` 改写，`MainWindow.xaml` 绑定改到 `Coordinator.Tasks`。57 组全过。
+
+**验收**：57 组全过；新增 3 组（窗口按 JobId 各自持有任务、`CurrentTask` 粘性、`TaskSummary` 单窗口视角）。**已完成，见提交记录**。
+
+**风险与注意**：
+
+- `HasTasks` / `TaskSummary` 也引用 `Tasks`，删属性时必须一并改写，否则编译失败。测试对这两者无断言。
+- XAML 绑定 `{Binding Tasks}` 改为 `{Binding Coordinator.Tasks}`。`Coordinator` 与 `Tasks` 实例都不变，集合增删仍由 `ObservableCollection` 通知，无需额外 `PropertyChanged`。
 
 ### 阶段 3：多窗口外壳
 
@@ -344,7 +358,7 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 
 1. `App.xaml.cs` 的 `private MainWindow? window` 改为 `List<MainWindow> windows` + 单例 `TaskCoordinator`。
 2. `--path` 到达时新建窗口而非复用（[App.xaml.cs:48-53](../src/ImgZip.App/App.xaml.cs)）。无参数启动复用空白草稿窗口（待决问题 2）。
-3. `MainWindow.xaml` 删除 `ItemsControl ItemsSource="{Binding Tasks}"` 整块（[MainWindow.xaml:78-111](../src/ImgZip.App/MainWindow.xaml)），换成单任务卡片。
+3. `MainWindow.xaml` 删除 `ItemsControl ItemsSource="{Binding Coordinator.Tasks}"` 整块（[MainWindow.xaml:78-111](../src/ImgZip.App/MainWindow.xaml)），换成单任务卡片。
 4. 任务结束后草稿区收起（见「关键约束：窗口是单次使用的」）。
 5. 窗口关闭只取消本窗口任务；关最后一个窗口时检查协调者全局任务（待决问题 4）。
 6. 级联窗口位置（待决问题 5）。
@@ -401,7 +415,8 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 | 1a | ✅ 已完成，44 组通过，测试零修改 | `cc7cd43` |
 | 1b | ✅ 已完成，47 组通过（+3 共享场景） | `af5d9c3` |
 | 1c | ✅ 已完成，47 组通过 | `7b14803` |
-| 阶段 2-6 | 待开始 | — |
+| 阶段 2 | ✅ 已完成，60 组通过（+3 单任务语义） | 见下文 |
+| 阶段 3-6 | 待开始 | — |
 
 
 ## 不要一次性重写
