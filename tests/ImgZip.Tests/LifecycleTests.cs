@@ -763,8 +763,9 @@ static class LifecycleTests
             Directory.CreateDirectory(staging);
             var locked = Path.Combine(staging, "partial.bin");
             await File.WriteAllTextAsync(locked, "half-written");
-            // 强制关闭只按 task.OutputPath 清暂存；执行层替身不产生 Output，就补一条等价的输出事件。
-            vm.Apply(new() { JobId = task.JobId, Type = "file", State = "succeeded", Index = 0, Total = 1, Completed = 1, Succeeded = 1, Output = output });
+            // 强制关闭只按 task.OutputPath 清暂存；执行层替身不产生 Output，
+            // 就补一条真实 worker 也会发的 manifest（它才是 Output 的第一个携带者）。
+            vm.Apply(new() { JobId = task.JobId, Type = "manifest", State = "ready", Total = 1, Output = output });
             await Until(() => task.OutputPath == output);
             using var handle = new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None);
             var report = await vm.ForceCloseAsync();
