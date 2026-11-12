@@ -341,8 +341,18 @@ public sealed class TaskCoordinator
                 var limit = task.EngineIndex == 1 ? 1 : EffectivePcConcurrency;
                 var olderQueued = taskIndex.Values.Any(t => t != task && t.EngineIndex == task.EngineIndex && t.IsQueued
                     && !t.QueueCancellation.IsCancellationRequested && t.CreatedAt < task.CreatedAt);
-                if (occupied >= limit || olderQueued) return;
+                if (occupied >= limit || olderQueued)
+                {
+                    // 只说「排队中」用户不知道在等谁，也判断不出还要等多久。
+                    task.QueueReason = olderQueued
+                        ? "排队中 · 前面还有任务在等待，按提交顺序执行"
+                        : task.EngineIndex == 1
+                            ? "排队中 · NAS 已有任务在执行，完成后自动开始"
+                            : $"排队中 · 已有 {occupied} 个 PC 任务在跑（上限 {limit}），空出名额后自动开始";
+                    return;
+                }
                 task.OwnsSlot = true;
+                task.QueueReason = "";
                 var cores = Math.Clamp(Environment.ProcessorCount, 1, 64);
                 var activePc = taskIndex.Values.Count(t => t.OwnsSlot && t.EngineIndex == 0);
                 var threads = task.EngineIndex == 1

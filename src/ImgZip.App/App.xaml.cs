@@ -57,6 +57,7 @@ public partial class App : Application
         // 带 --path 启动则一定新开窗口：新来源归新窗口，不劫持已有草稿。
         if (paths.Length == 0 && FindBlankDraft() is { } blank)
         {
+            // 这次启动由用户点击触发，本进程持有前台权，可以直接抢。
             BringToFront(blank);
         }
         else
@@ -66,6 +67,7 @@ public partial class App : Application
         _ = broker.ListenAsync(incoming => dispatcher.TryEnqueue(() =>
         {
             // 不带路径的第二次启动（又双击了一次）：只是把用户叫回来，不建新窗口。
+            // 发送方已调用 AllowSetForegroundWindow 把前台权让过来，这里可以真的置前。
             if (incoming.Length == 0 && FindBlankDraft() is { } blank) { BringToFront(blank); return; }
             // 右键新来源：新开一个窗口承载，而不是劫持已有窗口的草稿。
             OpenWindow(worker, store, incoming);
@@ -98,8 +100,9 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 尽力把新窗口带到前面。Windows 前台锁可能只让任务栏闪烁：
-    /// 本进程不是前台进程时 SetForegroundWindow 会被系统拒绝，这属于系统行为。
+    /// 把窗口带到前面。每个窗口都是这两种来源之一：用户直接启动进程（本进程持有前台权），
+    /// 或收到转发消息（发送方先调了 AllowSetForegroundWindow）。两种情况都有抢前台的资格。
+    /// 抢不到时（用户正在别处输入、UAC、锁屏）退回 BringWindowToTop，至少提到 Z 序顶部。
     /// </summary>
     private static void BringToFront(MainWindow window)
     {
@@ -107,7 +110,8 @@ public partial class App : Application
         {
             window.Activate();
             var handle = WinRT.Interop.WindowNative.GetWindowHandle(window);
-            if (handle != IntPtr.Zero) SetForegroundWindow(handle);
+            if (handle == IntPtr.Zero) return;
+            if (!SetForegroundWindow(handle)) BringWindowToTop(handle);
         }
         catch { }
     }
@@ -115,6 +119,10 @@ public partial class App : Application
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
     private static string[] ParsePaths(string[] args)
     {
         var paths = new List<string>();

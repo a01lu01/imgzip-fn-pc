@@ -44,7 +44,7 @@
           <Border Style="{StaticResource Surface}" Padding="13,10">
             <Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="22" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
               <FontIcon Glyph="&#xE7F4;" FontSize="19" Foreground="{ThemeResource SubtextBrush}" />
-              <StackPanel Grid.Column="1" Spacing="3"><TextBlock Text="执行位置" FontSize="13" /><TextBlock Text="{Binding EngineStatus}" Style="{StaticResource SecondaryText}" /></StackPanel>
+              <StackPanel Grid.Column="1" Spacing="3"><TextBlock Text="执行位置" FontSize="13" /><TextBlock Text="{Binding EngineStatus}" Style="{StaticResource SecondaryText}" /><TextBlock Text="{Binding FallbackNotice}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasFallbackNotice, Converter={StaticResource BoolVisibility}}" /></StackPanel>
               <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" AutomationProperties.Name="压缩引擎">
                 <ToggleButton x:Name="EnginePcButton" Content="本机 PC" Tag="pc" Style="{StaticResource SegmentLeftButton}" Click="EngineButton_Click" />
                 <ToggleButton x:Name="EngineNasButton" Content="NAS" Tag="nas" Style="{StaticResource SegmentRightButton}" Click="EngineButton_Click" />
@@ -89,6 +89,7 @@
                 <ProgressBar Maximum="100" Value="{Binding Progress}" IsIndeterminate="{Binding IsIndeterminate}" Visibility="{Binding IsRunning, Mode=OneWay, Converter={StaticResource BoolVisibility}}" />
                 <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" />
                 <TextBlock Text="{Binding CurrentFile}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding QueueReason}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" Visibility="{Binding HasQueueReason, Converter={StaticResource BoolVisibility}}" />
                 <TextBlock Text="{Binding ConcurrencyText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
                 <TextBlock Text="{Binding CopyProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" Visibility="{Binding HasCopyProgress, Converter={StaticResource BoolVisibility}}" />
                 <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />

@@ -300,6 +300,26 @@ await Test("successful task record is cleaned up and removed from the list", asy
     Check(!Directory.EnumerateFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Any(), "Task record should be deleted");
 });
 
+await Test("engine picker honours mode and eligibility", () =>
+{
+    // 阶段 6：PickEngine 把「模式决定的候选」和「来源资格」分开，资格是硬约束。
+    // auto
+    Check(MainViewModel.PickEngine("auto", true, "pc") == 1, "auto should pick NAS for eligible source");
+    Check(MainViewModel.PickEngine("auto", false, "nas") == 0, "auto should pick PC for local source");
+    // fixedPc
+    Check(MainViewModel.PickEngine("fixedPc", true, "nas") == 0, "fixedPc should ignore eligibility and preference");
+    // last
+    Check(MainViewModel.PickEngine("last", true, "nas") == 1, "last should reuse the remembered NAS");
+    Check(MainViewModel.PickEngine("last", true, "pc") == 0, "last should reuse the remembered PC");
+    Check(MainViewModel.PickEngine("last", false, "nas") == 0, "last should fall back when NAS is not eligible");
+    // 未知模式按 auto 处理
+    Check(MainViewModel.PickEngine("garbage", true, "pc") == 1, "unknown mode should behave like auto");
+    Check(MainViewModel.PickEngine("garbage", false, "nas") == 0, "unknown mode should behave like auto");
+    // eligibility 是硬约束：fixedPc 之外，任何模式下 NAS 不可达都不能选 NAS
+    Check(MainViewModel.PickEngine("last", false, "pc") == 0, "ineligible source should never select NAS");
+    return Task.CompletedTask;
+});
+
 await LifecycleTests.RunAsync(scratch, Test);
 
 var shell = Environment.GetEnvironmentVariable("IMGZIP_TEST_PWSH") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe") : Path.Combine(root, ".tools/pwsh/pwsh"));

@@ -640,6 +640,54 @@ static class LifecycleTests
             worker.Finish(worker.Runs[1].JobId, "succeeded");
             await Task.WhenAll(run1, run2);
         });
+        await test("queued task explains why it is waiting", async () =>
+        {
+            var (vm1, worker, config, disk) = await Model("queue-reason");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, vm1.Coordinator);
+            await vm2.InitializeAsync();
+            var run1 = await Start(vm1, "qr-a"); await Until(() => worker.Runs.Count == 1);
+            var run2 = await Start(vm2, "qr-b");
+            await Until(() => vm2.CurrentTask is not null);
+            var queued = vm2.CurrentTask!;
+            // 原因由 WaitForSlotAsync 的下一轮调度写入，等它出现再断言，避免和调度赛跑。
+            for (var i = 0; i < 50 && !queued.HasQueueReason; i++) await Task.Delay(10);
+            Check(queued.IsQueued && queued.HasQueueReason && queued.QueueReason.Contains("PC"),
+                $"Queued task did not explain itself: '{queued.QueueReason}'");
+            worker.Finish(worker.Runs[0].JobId, "succeeded");
+            await Until(() => worker.Runs.Count == 2);
+            Check(!queued.HasQueueReason, $"Queue reason outlived the wait: '{queued.QueueReason}'");
+            worker.Finish(worker.Runs[1].JobId, "succeeded");
+            await Task.WhenAll(run1, run2);
+        });
+        await test("nas queue reason names the NAS engine", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "queue-reason-nas"));
+            await config.SaveAsync(new() { PcConcurrency = 4, Server = "nas.local", User = "nas", KeyPath = @"C:\key", NasHosts = ["nas.local"] });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var first = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await first.InitializeAsync();
+            var second = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await second.InitializeAsync();
+            // UNC 来源让 NasEligible 为真，SetSourcesAsync 才会把引擎定为 NAS。
+            async Task<Task> StartNas(MainViewModel vm, string name)
+            {
+                await vm.SetSourcesAsync([$@"\\nas.local\photos\{name}.jpg"]);
+                Check(vm.EngineIndex == 1, "Engine fixture did not select NAS for UNC sources");
+                return vm.StartAsync();
+            }
+            var runA = await StartNas(first, "qr-nas-a");
+            await Until(() => worker.Runs.Count == 1 && worker.Runs[0].Engine == "nas");
+            var runB = await StartNas(second, "qr-nas-b");
+            await Until(() => second.CurrentTask?.IsQueued == true);
+            var queued = second.CurrentTask!;
+            for (var i = 0; i < 50 && !queued.HasQueueReason; i++) await Task.Delay(10);
+            Check(queued.HasQueueReason && queued.QueueReason.Contains("NAS"),
+                $"NAS queue reason did not name the NAS engine: '{queued.QueueReason}'");
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await runA;
+            await Until(() => worker.Runs.Count == 2);
+            Check(!queued.HasQueueReason, $"NAS queue reason outlived the wait: '{queued.QueueReason}'");
+            worker.Finish(worker.Runs[1].JobId, "succeeded"); await runB;
+        });
     }
 
     private sealed class ControlledWorker : IWorkerClient

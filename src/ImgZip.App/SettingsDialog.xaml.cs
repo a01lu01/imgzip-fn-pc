@@ -19,7 +19,10 @@ public sealed partial class SettingsDialog : ContentDialog
         PortField.Value = config.Port; HostsField.Text = string.Join(", ", config.NasHosts); IpField.Text = config.NasIp;
         ConcurrencyField.Value = config.PcConcurrency;
         NasConcurrencyField.Value = config.NasConcurrency;
+        EngineModeField.SelectedIndex = config.EngineMode switch { "fixedPc" => 1, "last" => 2, _ => 0 };
     }
+    private string ReadEngineMode() =>
+        (EngineModeField.SelectedItem as ComboBoxItem)?.Tag as string is "fixedPc" or "last" ? (EngineModeField.SelectedItem as ComboBoxItem)!.Tag as string : "auto";
     private AppConfig Read()
     {
         if (!double.IsFinite(PortField.Value) || PortField.Value != Math.Truncate(PortField.Value) || PortField.Value is < 1 or > 65535) throw new ArgumentException("SSH 端口需为 1–65535 的整数。");
@@ -31,6 +34,8 @@ public sealed partial class SettingsDialog : ContentDialog
             NasIp = IpField.Text, NasHosts = HostsField.Text.Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), Theme = model.Config.Theme,
             PcConcurrency = (int)ConcurrencyField.Value,
             NasConcurrency = (int)NasConcurrencyField.Value,
+            EngineMode = ReadEngineMode(),
+            LastEngine = model.Config.LastEngine,
             CopySkippedFiles = model.Config.CopySkippedFiles
         }.Normalize();
     }

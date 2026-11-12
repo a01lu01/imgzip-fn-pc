@@ -58,6 +58,23 @@ public partial class CompressionTaskViewModel : ObservableObject
     [ObservableProperty] private long copiedBytes;
 
     public bool IsQueued => State == "queued";
+    /// <summary>
+    /// 排队原因，例如「NAS 已有任务在执行」。排队时才有值，拿到名额后清空。
+    /// 只显示「排队中」而不说在等谁，用户无法判断要等多久，也不知道是不是卡住了。
+    /// </summary>
+    public string QueueReason
+    {
+        get => queueReason;
+        internal set
+        {
+            if (queueReason == value) return;
+            queueReason = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(HasQueueReason));
+        }
+    }
+    private string queueReason = "";
+    public bool HasQueueReason => queueReason.Length > 0;
     public bool CanResume => State == "awaitingResume";
     public bool CanRemove => IsQueued || CanResume;
     public bool IsRunning => State is "preparing" or "running" or "cancelling";
@@ -86,6 +103,8 @@ public partial class CompressionTaskViewModel : ObservableObject
         if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(Checking) or nameof(CopyTotal) or nameof(CopyCompleted) or nameof(CopiedBytes))
             foreach (var name in new[] { nameof(IsQueued), nameof(CanResume), nameof(CanRemove), nameof(IsRunning), nameof(IsUnknown), nameof(IsTerminal), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(IsIndeterminate), nameof(Progress), nameof(ProgressText), nameof(StateTitle), nameof(HasCopyProgress), nameof(CopyProgressText) })
                 base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        // 排队状态一变，排队原因就该跟着出现或消失。
+        if (e.PropertyName == nameof(State)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(HasQueueReason)));
         if (e.PropertyName == nameof(OpenOutputPath)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(CanOpenOutput)));
         if (e.PropertyName == nameof(Message)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(HasMessage)));
     }

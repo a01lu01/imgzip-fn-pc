@@ -203,7 +203,16 @@ public partial class MainViewModel : ObservableObject
         SourcePath = string.Join("; ", paths); SourceSummary = "开始前将统计当前处理范围";
         OutputPath = "源目录_compressed（已存在时自动编号）";
         State = "ready"; Message = ""; ResultSummary = "原始图片保持不变";
-        EngineIndex = NasEligible ? 1 : 0;
+        var eligible = NasEligible;
+        var chosen = PickEngine(Config.EngineMode, eligible, Config.LastEngine);
+        // 偏好是 NAS 但来源够不着 NAS：说清楚，否则用户会觉得这个默认值时灵时不灵。
+        fallbackNotice =
+            Config.EngineMode == "last" && Config.LastEngine == "nas" && !eligible
+                ? "来源在本机，已临时切到 PC（记住的偏好是 NAS）。"
+                : "";
+        OnPropertyChanged(nameof(FallbackNotice));
+        OnPropertyChanged(nameof(HasFallbackNotice));
+        EngineIndex = chosen;
         NotifyDerived();
         await ProbeSelectedAsync();
     }
@@ -272,6 +281,38 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex) { Config = Config with { CopySkippedFiles = value }; Message = $"复制其他文件偏好无法保存：{ex.Message}"; }
     }
+    /// <summary>记住用户手动选过的引擎。失败只提示，不阻塞本次切换。</summary>
+    public async Task SetLastEngineAsync(string engine)
+    {
+        if (engine is not ("pc" or "nas")) return;
+        if (hasConfigurationError) return;
+        try
+        {
+            await Coordinator.UpdateConfigAsync(config => config with { LastEngine = engine }, updated => store.SaveAsync(updated));
+            Config = Coordinator.Config;
+        }
+        catch (Exception ex) { Config = Config with { LastEngine = engine }; Message = $"引擎偏好无法保存：{ex.Message}"; }
+    }
+    /// <summary>
+    /// 按模式决定默认引擎。资格与偏好分离：模式算出的候选若通不过资格检查，
+    /// 本次回落 PC，但**不改写** <see cref="AppConfig.LastEngine"/>——
+    /// 否则「记住上次选择」会退化成「记住最后实际运行的引擎」。
+    /// </summary>
+    public static int PickEngine(string mode, bool nasEligible, string lastEngine)
+    {
+        // 模式只决定「候选」；资格是硬约束，候选通不过就回落 PC。
+        var candidate = mode switch
+        {
+            "fixedPc" => "pc",
+            "last" => lastEngine,
+            _ => nasEligible ? "nas" : "pc"
+        };
+        return candidate == "nas" && !nasEligible ? 0 : candidate == "nas" ? 1 : 0;
+    }
+    /// <summary>回落说明；没有发生回落时返回空串。</summary>
+    public string FallbackNotice => fallbackNotice;
+    public bool HasFallbackNotice => fallbackNotice.Length > 0;
+    private string fallbackNotice = "";
     public async Task SaveConnectionAsync(AppConfig draft)
     {
         if (!string.IsNullOrWhiteSpace(draft.Server) && draft.ValidateConnection() is { } validation) throw new ArgumentException(validation);

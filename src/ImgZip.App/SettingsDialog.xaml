@@ -16,6 +16,12 @@
       <TextBlock Text="引擎说明" FontSize="15" FontWeight="SemiBold" Margin="0,8,0,0" />
       <TextBlock Text="本机引擎随安装包部署。NAS 需启用 SSH 公钥认证，并将 caesiumclt 安装到 ~/bin/caesiumclt；还需 Bash、GNU find/stat 和 setsid。可继续使用原项目的 imgzip-remote.ps1 -Setup 安装 NAS 引擎。" Style="{StaticResource SecondaryText}" />
       <TextBlock Text="性能" FontSize="15" FontWeight="SemiBold" Margin="0,8,0,0" />
+      <ComboBox x:Name="EngineModeField" Header="默认使用哪个引擎" HorizontalAlignment="Stretch">
+        <ComboBoxItem Content="自动推断（按来源位置选择）" Tag="auto" />
+        <ComboBoxItem Content="固定本机 PC" Tag="fixedPc" />
+        <ComboBoxItem Content="记住上次切换" Tag="last" />
+      </ComboBox>
+      <TextBlock Text="这只决定新加入来源时的默认值，主界面的「本机 PC / NAS」开关仍可随时临时切换。" Style="{StaticResource SecondaryText}" />
       <NumberBox x:Name="ConcurrencyField" Header="PC 并行任务数（0 = 自动，等于 CPU 核数）" Minimum="0" Maximum="64" SpinButtonPlacementMode="Compact" />
       <NumberBox x:Name="NasConcurrencyField" Header="NAS 并发作业数（1–4，默认 2）" Minimum="1" Maximum="4" SpinButtonPlacementMode="Compact" />
       <TextBlock Text="该值只控制单个 NAS 任务内部的引擎进程数；NAS 任务始终串行，可与 PC 任务并行。实际值还会被 NAS 核数和 4 的硬上限夹取。" Style="{StaticResource SecondaryText}" />

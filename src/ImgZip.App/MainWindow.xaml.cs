@@ -233,6 +233,8 @@ public sealed partial class MainWindow : Window
         if (ViewModel.EngineIndex != index)
         {
             ViewModel.EngineIndex = index;
+            // 点击即记：下一次拖入来源时 last 模式能立刻沿用这次的选择。
+            await Safe(() => ViewModel.SetLastEngineAsync(index == 1 ? "nas" : "pc"));
             if (loaded) await Safe(ViewModel.ProbeSelectedAsync);
         }
         SyncEngineButtons();

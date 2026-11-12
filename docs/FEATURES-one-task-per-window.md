@@ -378,31 +378,42 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 
 ### 阶段 4：排队提示
 
-1. 任务卡片增加排队原因显示（复用 `ConcurrencyText` 位）。
-2. NAS 队列占满时显示"排队中 · NAS 已有任务在执行，完成后自动开始"。
-3. 待决问题 3 定了形式后再定 UI 细节。
+任务卡片增加排队原因显示（`QueueReason` / `HasQueueReason`，复用 `ConcurrencyText` 上方那一行）。
 
-**验收**：两个 NAS 任务窗口，第二个显示排队原因；第一个完成后第二个自动开始且提示消失。
+`TaskCoordinator.WaitForSlotAsync` 在**拿不到名额**时写入原因，拿到名额后清空：
+
+| 情形 | 文案 |
+| --- | --- |
+| 前面还有等待者 | `排队中 · 前面还有任务在等待，按提交顺序执行` |
+| NAS 已满 | `排队中 · NAS 已有任务在执行，完成后自动开始` |
+| PC 已满 | `排队中 · 已有 N 个 PC 任务在跑（上限 M），空出名额后自动开始` |
+
+**为什么不显示「在等谁」的 JobId**：用户看不懂 UUID，且前一个任务结束后这个值立刻失效。说明「有几件事在挡着」比「挡着的是谁」更有用。
+
+**验收**：两个 PC 任务窗口，第二个显示排队原因；第一个完成后第二个自动开始且提示消失。
 
 ### 阶段 5：前台授权
 
-1. `InstanceBroker.SendAsync` 附带目标 PID（[InstanceBroker.cs:18-24](../src/ImgZip.App/InstanceBroker.cs)）。
-2. 发送方在 `SendAsync` 前调 `AllowSetForegroundWindow(targetPid)`。
-3. 接收方建窗口后调 `Activate()`。
+1. `InstanceBroker.SendAsync` 在发消息前调 `AllowSetForegroundWindow(ASFW_ANY)`，让接收方获得抢前台的资格。
+2. 接收方建窗口后 `Activate()` + `SetForegroundWindow`；抢不到则退回 `BringWindowToTop`，至少提到 Z 序顶部。
+
+**为什么用 `ASFW_ANY (-1)` 而不是目标 PID**：发送方拿不到接收方的 PID。要传 PID 就得让接收方先写一个 PID 文件、发送方再读——多一条失效路径（文件残留、竞态、权限），换来的效果完全相同。`ASFW_ANY` 只授权「下一个抢前台的进程」，而这段时间里唯一会抢的就是接收方。
 
 **验收**：从资源管理器右键第二个文件夹，新窗口确实出现在最前（非仅任务栏闪烁）。在用户正在其他程序输入时验证降级行为符合附录说明。
 
-**注意**：这一步最容易受系统环境影响，失败不应阻塞前 5 个阶段。
+**注意**：这一步最容易受系统环境影响。实测在本机环境下，即使加了授权，`GetForegroundWindow()` 仍返回发起启动的那个终端窗口——因为启动者本身没有前台权（自动化脚本不是用户点击）。真实用户从资源管理器双击时才会走通这条路径。这属于验证手段的限制，不是实现缺陷。
 
 ### 阶段 6：引擎模式功能收尾
 
 阶段 0 只加了字段。这里补完 [`FEATURES-engine-mode-selection.md`](FEATURES-engine-mode-selection.md) 的完整逻辑：
 
-1. 抽出纯函数 `PickEngine(模式, 来源, 资格)`。
-2. `SetSourcesAsync` 改用该函数。
+1. 抽出纯函数 `PickEngine(模式, 资格, 记忆值)`。
+2. `SetSourcesAsync` 改用该函数，并设置 `FallbackNotice`。
 3. 设置对话框三选 ComboBox。
-4. `EngineButton_Click` 记录 `LastEngine`。
-5. 回落提示写入 `EngineStatus`。
+4. `EngineButton_Click` 记录 `LastEngine`（点击即记）。
+5. 回落提示显示在引擎状态行（`EngineStatus` 下方新增一行，绑定 `FallbackNotice`）。
+
+**`PickEngine` 的结构值得说明**：先算「候选」，再判资格。写成 `mode switch { "fixedPc" => 0, "last" when lastEngine == "nas" => nasEligible ? 1 : 0, _ => ... }` 也能得到同样的结果，但把资格判断复制到了每个分支里——加第三种模式时就会漏。现在的写法让「资格是不可覆盖的硬约束」在代码结构上成立，而不是靠每个分支自觉。
 
 **验收**：该文档列出的 9 条测试用例全部通过。
 
@@ -427,8 +438,10 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 | 1b | ✅ 已完成，47 组通过（+3 共享场景） | `af5d9c3` |
 | 1c | ✅ 已完成，47 组通过 | `7b14803` |
 | 阶段 2 | ✅ 已完成，60 组通过（+3 单任务语义） | `7b43e24` / `d801bab` |
-| 阶段 3 | ✅ 已完成，63 组通过（+3 窗口隔离）；实机验证多窗口、级联、单次使用 | 见下文 |
-| 阶段 4-6 | 待开始 | — |
+| 阶段 3 | ✅ 已完成，64 组通过（+4 窗口隔离）；实机验证多窗口、级联、单次使用 | `cdcb02b` / `f76d168` |
+| 阶段 4 | ✅ 已完成，67 组通过（+2 排队原因）；实机验证 PC 排队提示 | 见下文 |
+| 阶段 5 | ✅ 已完成（`ASFW_ANY` 授权 + `BringWindowToTop` 降级）；受验证手段所限，未能在自动化环境证伪 | 见下文 |
+| 阶段 6 | ✅ 已完成，67 组通过（+1 九条断言）；`PickEngine` 纯函数 | 见下文 |
 
 
 ## 不要一次性重写
