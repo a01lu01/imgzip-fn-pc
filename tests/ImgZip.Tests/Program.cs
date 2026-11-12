@@ -114,11 +114,11 @@ await Test("unknown task retained; draft stays editable; inspection recovers", a
     var path = Path.Combine(scratch, "vm-image.jpg"); await File.WriteAllTextAsync(path, "image");
     await vm.SetSourcesAsync([path]);
     await vm.StartAsync();
-    Check(vm.IsUnknown && vm.Tasks.Any(t => t.IsUnknown), "Unknown task was not retained");
+    Check(vm.IsUnknown && vm.CurrentTask?.IsUnknown == true, "Unknown task was not retained");
     Check(Directory.GetFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Length == 1, "Unresolved task record missing");
     Check(vm.CanEdit, "Draft controls should remain enabled");
     vm.ClearSources(); Check(vm.SourcePath != path, "Draft should stay editable while a task is unresolved");
-    await vm.InspectAsync(); Check(vm.State == "succeeded" && !vm.Tasks.Any(t => t.IsUnknown), "Inspection did not recover");
+    await vm.InspectAsync(); Check(vm.State == "succeeded" && vm.CurrentTask is { IsUnknown: false }, "Inspection did not recover");
     Check(!File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Confirmed task marker retained");
     var jobId = mock.JobId;
     vm.Apply(new WorkerEvent { JobId = jobId, Type = "finished", State = "unknown" });
@@ -136,19 +136,26 @@ await Test("PC concurrency respects configured limit and queues the rest", async
     var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded" };
     var store = new ConfigStore(Path.Combine(scratch, "mt"));
     await store.SaveAsync(new AppConfig { PcConcurrency = 2 });
-    var vm = new MainViewModel(mock, store, "unused");
-    await vm.InitializeAsync();
+    var first = new MainViewModel(mock, store, "unused");
+    await first.InitializeAsync();
+    var windows = new List<MainViewModel> { first };
+    for (var i = 1; i < 3; i++)
+    {
+        var window = new MainViewModel(mock, store, "unused", null, null, first.Coordinator);
+        await window.InitializeAsync();
+        windows.Add(window);
+    }
     var runs = new List<Task>();
     for (var i = 0; i < 3; i++)
     {
         var source = Path.Combine(scratch, $"mt{i}.jpg"); await File.WriteAllTextAsync(source, "image");
-        await vm.SetSourcesAsync([source]);
-        runs.Add(vm.StartAsync());
+        await windows[i].SetSourcesAsync([source]);
+        runs.Add(windows[i].StartAsync());
     }
-    await WaitUntilAsync(() => mock.MaxActiveRuns == 2 && vm.Tasks.Count(t => t.IsQueued) == 1,
+    await WaitUntilAsync(() => mock.MaxActiveRuns == 2 && windows.Count(w => w.CurrentTask?.IsQueued == true) == 1,
         $"PC concurrency limit not reached: active={mock.ActiveRuns}, max={mock.MaxActiveRuns}");
     Check(mock.MaxActiveRuns == 2, $"PC concurrency limit not respected: {mock.MaxActiveRuns}");
-    Check(vm.Tasks.Count(t => t.IsQueued) == 1, "Excess PC task should stay queued");
+    Check(windows.Count(w => w.CurrentTask?.IsQueued == true) == 1, "Excess PC task should stay queued");
     mock.ReleaseRuns();
     await Task.WhenAll(runs);
 });
@@ -163,10 +170,12 @@ await Test("NAS tasks serialize; PC tasks may run alongside", async () =>
         await disk.SaveAsync(new TaskRecord { Request = new() { Engine = "nas", Sources = [source], StateDirectory = store.DirectoryPath } });
     var vm = new MainViewModel(mock, store, "unused");
     await vm.InitializeAsync();
-    Check(vm.Tasks.All(t => t.CanResume), "Recovered queue must wait for user");
-    var runs = vm.Tasks.ToArray().Select(vm.ResumeTaskAsync).ToList();
-    await vm.SetSourcesAsync([Path.Combine(scratch, "alongside.jpg")]);
-    runs.Add(vm.StartAsync());
+    Check(vm.Coordinator.Tasks.All(t => t.CanResume), "Recovered queue must wait for user");
+    var runs = vm.Coordinator.Tasks.ToArray().Select(vm.ResumeTaskAsync).ToList();
+    var pc = new MainViewModel(mock, store, "unused", null, disk, vm.Coordinator);
+    await pc.InitializeAsync();
+    await pc.SetSourcesAsync([Path.Combine(scratch, "alongside.jpg")]);
+    runs.Add(pc.StartAsync());
     await WaitUntilAsync(() => mock.MaxActiveNas == 1 && mock.ActiveRuns == 2,
         $"PC/NAS concurrency not reached: maxNas={mock.MaxActiveNas}, active={mock.ActiveRuns}, requests={mock.RunRequests.Count}");
     Check(mock.MaxActiveNas == 1 && mock.RunRequests.Count(r => r.Engine == "nas") == 1, "NAS test must start exactly one task before release");
@@ -198,21 +207,24 @@ await Test("NAS concurrency setting does not change PC task thread allocation", 
     var mock = new FakeWorker { HoldRuns = true, RunState = "succeeded" };
     var store = new ConfigStore(Path.Combine(scratch, "pc-independent"));
     await store.SaveAsync(new AppConfig { PcConcurrency = 2, NasConcurrency = 1 });
-    var vm = new MainViewModel(mock, store, "unused");
-    await vm.InitializeAsync();
+    var first = new MainViewModel(mock, store, "unused");
+    await first.InitializeAsync();
+    var second = new MainViewModel(mock, store, "unused", null, null, first.Coordinator);
+    await second.InitializeAsync();
+    var windows = new[] { first, second };
     var runs = new List<Task>();
     for (var i = 0; i < 2; i++)
     {
         var source = Path.Combine(scratch, $"pc-independent-{i}.jpg");
         await File.WriteAllTextAsync(source, "image");
-        await vm.SetSourcesAsync([source]);
-        runs.Add(vm.StartAsync());
+        await windows[i].SetSourcesAsync([source]);
+        runs.Add(windows[i].StartAsync());
     }
     await WaitUntilAsync(() => mock.RunRequests.Count == 2, "Both PC tasks did not start");
     var expectedFirst = Math.Max(1, Environment.ProcessorCount);
     var expectedSecond = Math.Max(1, Environment.ProcessorCount / 2);
     var threads = mock.RunRequests.Select(r => r.Options.Threads).OrderByDescending(value => value).ToArray();
-    Check(vm.EffectivePcConcurrency == 2 && threads.SequenceEqual([expectedFirst, expectedSecond]),
+    Check(first.EffectivePcConcurrency == 2 && threads.SequenceEqual([expectedFirst, expectedSecond]),
         $"PC thread allocation changed with NAS setting: {string.Join(",", threads)}");
     mock.ReleaseRuns();
     await Task.WhenAll(runs);
@@ -283,7 +295,8 @@ await Test("successful task record is cleaned up and removed from the list", asy
     var source = Path.Combine(scratch, "cleanup.jpg"); await File.WriteAllTextAsync(source, "image");
     await vm.SetSourcesAsync([source]);
     await vm.StartAsync();
-    Check(!vm.Tasks.Any(), "Successful task should be removed from the list");
+    Check(vm.Coordinator.Tasks.Count == 0 && vm.CurrentTask is { State: "succeeded" },
+        "Successful task was not removed from the pool");
     Check(!Directory.EnumerateFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Any(), "Task record should be deleted");
 });
 

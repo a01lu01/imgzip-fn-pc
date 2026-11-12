@@ -26,14 +26,16 @@ static class LifecycleTests
         }
         await test("removed queued task never calls the execution layer", async () =>
         {
-            var (vm, worker, _, _) = await Model("remove");
-            var first = await Start(vm, "remove-first"); await Until(() => worker.Runs.Count == 1);
-            var second = await Start(vm, "remove-second"); await Until(() => vm.Tasks.Any(t => t.IsQueued));
-            var removed = vm.Tasks.Single(t => t.IsQueued);
-            await vm.CancelTaskAsync(removed);
+            var (vm1, worker, config, disk) = await Model("remove");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, vm1.Coordinator);
+            await vm2.InitializeAsync();
+            var first = await Start(vm1, "remove-first"); await Until(() => worker.Runs.Count == 1);
+            var second = await Start(vm2, "remove-second"); await Until(() => vm2.CurrentTask?.IsQueued == true);
+            var removed = vm2.CurrentTask!;
+            await vm2.CancelTaskAsync(removed);
             worker.Finish(worker.Runs[0].JobId, "succeeded");
             await Task.WhenAll(first, second);
-            Check(worker.Runs.Count == 1 && vm.Tasks.Count == 0, "Removed waiter launched or was retained");
+            Check(worker.Runs.Count == 1 && vm1.Coordinator.Tasks.Count == 0, "Removed waiter launched or was retained");
         });
         await test("cancellation wins during durable launch reservation", async () =>
         {
@@ -41,10 +43,11 @@ static class LifecycleTests
             disk.BlockLaunching = true;
             var run = await Start(vm, "race");
             await disk.LaunchEntered.Task;
-            var cancel = vm.CancelTaskAsync(vm.Tasks.Single());
+            var cancel = vm.CancelTaskAsync(vm.CurrentTask!);
             disk.AllowLaunch.TrySetResult();
             await Task.WhenAll(run, cancel);
-            Check(worker.Runs.Count == 0 && vm.Tasks.Count == 0, "Task launched after cancellation during reservation");
+            Check(worker.Runs.Count == 0 && vm.Coordinator.Tasks.Count == 0 && vm.CurrentTask is { State: "cancelled" },
+                "Task launched after cancellation during reservation");
         });
         foreach (var engine in new[] { "pc", "nas" })
         {
@@ -57,7 +60,7 @@ static class LifecycleTests
                     await disk.SaveAsync(new() { Request = new() { Engine = engine, Sources = [engine == "nas" ? $@"\\nas\photos\{i}.jpg" : Path.Combine(scratch, $"unknown{i}.jpg")], StateDirectory = config.DirectoryPath }, CreatedAt = DateTimeOffset.UtcNow.AddSeconds(i) });
                 var worker = new ControlledWorker();
                 var vm = new MainViewModel(worker, config, "fixture"); await vm.InitializeAsync();
-                var tasks = vm.Tasks.ToArray();
+                var tasks = vm.Coordinator.Tasks.ToArray();
                 Check(worker.Runs.Count == 0 && tasks.All(t => t.CanResume), "Restored queue auto-started");
                 var first = vm.ResumeTaskAsync(tasks[0]); await Until(() => worker.Runs.Count == 1);
                 worker.Finish(tasks[0].JobId, "unknown"); await first;
@@ -65,7 +68,7 @@ static class LifecycleTests
                 Check(worker.Runs.Count == 1 && tasks[1].IsQueued, "Unknown released its slot");
                 await vm.InspectTaskAsync(tasks[0]); await Until(() => worker.Runs.Count == 2);
                 worker.Finish(tasks[1].JobId, "succeeded"); await second;
-                Check(!vm.HasUnfinishedTasks && vm.Tasks.Count == 0, "Confirmed terminal failed to release capacity");
+                Check(!vm.HasUnfinishedTasks && vm.Coordinator.Tasks.Count == 0, "Confirmed terminal failed to release capacity");
                 foreach (var phase in new[] { "launching", "running" })
                 {
                     var unresolved = new WorkerRequest { Engine = engine, Sources = ["unresolved.jpg"], StateDirectory = config.DirectoryPath };
@@ -73,10 +76,10 @@ static class LifecycleTests
                     await disk.SaveAsync(new() { Request = unresolved with { JobId = Guid.NewGuid().ToString("N"), Sources = ["waiting.jpg"] } });
                     var restartedWorker = new ControlledWorker();
                     var restarted = new MainViewModel(restartedWorker, config, "fixture"); await restarted.InitializeAsync();
-                    var waiter = restarted.Tasks.Single(t => t.CanResume);
+                    var waiter = restarted.Coordinator.Tasks.Single(t => t.CanResume);
                     var resumed = restarted.ResumeTaskAsync(waiter); await Task.Delay(350);
                     Check(restartedWorker.Runs.Count == 0 && waiter.IsQueued, $"Recovered {phase} failed to hold its slot");
-                    await restarted.InspectTaskAsync(restarted.Tasks.Single(t => t.IsUnknown));
+                    await restarted.InspectTaskAsync(restarted.Coordinator.Tasks.Single(t => t.IsUnknown));
                     await Until(() => restartedWorker.Runs.Count == 1);
                     restartedWorker.Finish(waiter.JobId, "succeeded"); await resumed;
                     Check(!restarted.HasUnfinishedTasks, $"Recovered {phase} failed to release its slot");
@@ -90,9 +93,9 @@ static class LifecycleTests
             var records = Enumerable.Range(0, 2).Select(i => new TaskRecord { Request = new() { Sources = [Path.Combine(scratch, $"paused{i}.jpg")], StateDirectory = config.DirectoryPath } }).ToArray();
             foreach (var record in records) await disk.SaveAsync(record);
             var worker = new ControlledWorker(); var vm = new MainViewModel(worker, config, "fixture"); await vm.InitializeAsync();
-            Check(worker.Runs.Count == 0 && vm.Tasks.All(t => t.CanResume && t.CanRemove), "Queue incorrectly restored");
-            await vm.CancelTaskAsync(vm.Tasks.Single(t => t.JobId == records[0].Request.JobId));
-            var remaining = vm.Tasks.Single(); var run = vm.ResumeTaskAsync(remaining);
+            Check(worker.Runs.Count == 0 && vm.Coordinator.Tasks.All(t => t.CanResume && t.CanRemove), "Queue incorrectly restored");
+            await vm.CancelTaskAsync(vm.Coordinator.Get(records[0].Request.JobId)!);
+            var remaining = vm.Coordinator.Tasks.Single(); var run = vm.ResumeTaskAsync(remaining);
             await Until(() => worker.Runs.Count == 1); worker.Finish(remaining.JobId, "succeeded"); await run;
             Check(!Directory.EnumerateFiles(Path.Combine(config.DirectoryPath, "tasks"), "*.json").Any(), "Manual queue actions left records");
         });
@@ -110,7 +113,7 @@ static class LifecycleTests
             var incompleteJson = Wire.Encode(incomplete).Replace("\"failures\":[]", "\"failures\":null");
             await File.WriteAllTextAsync(incompletePath, incompleteJson);
             var vm = new MainViewModel(new ControlledWorker(), config, "fixture"); await vm.InitializeAsync();
-            Check(vm.Tasks.Count == 1 && vm.Tasks[0].IsUnknown && vm.Tasks[0].CanInspect, "Legacy task missing or duplicated");
+            Check(vm.Coordinator.Tasks.Count == 1 && vm.CurrentTask is { IsUnknown: true }, "Legacy task missing or duplicated");
             Check(!File.Exists(marker) && await File.ReadAllTextAsync(bad) == "broken-json", "Migration deleted unconverted data");
             Check(vm.Message.Contains("broken.json"), "Corrupt record error hidden");
             Check(vm.Message.Contains(incompletePath) && await File.ReadAllTextAsync(incompletePath) == incompleteJson, "Invalid record fields prevented recovery or were discarded");
@@ -123,8 +126,8 @@ static class LifecycleTests
             var request = new WorkerRequest { Sources = ["legacy.jpg"], StateDirectory = config.DirectoryPath };
             await File.WriteAllTextAsync(Path.Combine(config.DirectoryPath, "active-job.json"), Wire.Encode(request));
             var vm = new MainViewModel(new ControlledWorker(), config, "fixture"); await vm.InitializeAsync();
-            Check(vm.Tasks.Count == 1 && vm.CanInspect && vm.HasUnfinishedTasks, "Standalone marker not registered");
-            await vm.InspectAsync(); Check(vm.Tasks.Count == 0, "Migrated task could not be finalized");
+            Check(vm.CurrentTask is not null && vm.CanInspect && vm.HasUnfinishedTasks, "Standalone marker not registered");
+            await vm.InspectAsync(); Check(vm.Coordinator.Tasks.Count == 0, "Migrated task could not be finalized");
         });
         await test("migration write failure preserves old marker and registers unresolved task", async () =>
         {
@@ -134,7 +137,7 @@ static class LifecycleTests
             // A file blocks creation of the tasks directory, including under administrator test accounts.
             await File.WriteAllTextAsync(Path.Combine(config.DirectoryPath, "tasks"), "blocked");
             var vm = new MainViewModel(new ControlledWorker(), config, "fixture"); await vm.InitializeAsync();
-            Check(vm.Tasks.Single().IsUnknown && File.Exists(marker) && vm.HasMessage, "Migration failed silently or lost legacy task");
+            Check(vm.CurrentTask is { IsUnknown: true } && File.Exists(marker) && vm.HasMessage, "Migration failed silently or lost legacy task");
         });
         foreach (var phase in new[] { "queued", "launching" })
         {
@@ -142,7 +145,7 @@ static class LifecycleTests
             {
                 var (vm, worker, _, _) = await Model("save-fail-" + phase, phase);
                 await (await Start(vm, "fail-save-" + phase));
-                Check(worker.Runs.Count == 0 && vm.Tasks.Single().State == "failed" && vm.HasMessage, "Worker launched without durable record");
+                Check(worker.Runs.Count == 0 && vm.CurrentTask is { State: "failed" } && vm.HasMessage, "Worker launched without durable record");
             });
         }
         await test("draft remains enabled while submitted request is immutable", async () =>
@@ -161,11 +164,13 @@ static class LifecycleTests
         });
         await test("cancel all stops active tasks and all waiters before slots reopen", async () =>
         {
-            var (vm, worker, _, _) = await Model("close-all");
-            var first = await Start(vm, "close-a"); await Until(() => worker.Runs.Count == 1);
-            var second = await Start(vm, "close-b"); await Until(() => vm.Tasks.Any(t => t.IsQueued));
-            await vm.CancelAllAndWaitAsync(); await Task.WhenAll(first, second);
-            Check(worker.Runs.Count == 1 && !vm.HasUnfinishedTasks, "Close launched a waiter or left active work");
+            var (vm1, worker, config, disk) = await Model("close-all");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, vm1.Coordinator);
+            await vm2.InitializeAsync();
+            var first = await Start(vm1, "close-a"); await Until(() => worker.Runs.Count == 1);
+            var second = await Start(vm2, "close-b"); await Until(() => vm2.CurrentTask?.IsQueued == true);
+            await vm1.CancelAllAndWaitAsync(); await Task.WhenAll(first, second);
+            Check(worker.Runs.Count == 1 && !vm1.HasUnfinishedTasks, "Close launched a waiter or left active work");
         });
         await test("cancel all preserves unknown when recheck cannot confirm stopping", async () =>
         {
@@ -173,7 +178,7 @@ static class LifecycleTests
             worker.InspectState = "unknown";
             var run = await Start(vm, "close-unknown"); await Until(() => worker.Runs.Count == 1);
             worker.Finish(worker.Runs[0].JobId, "unknown"); await run;
-            await vm.CancelAllAndWaitAsync(); Check(vm.HasUnfinishedTasks && vm.Tasks.Single().IsUnknown, "Unconfirmed task treated as stopped");
+            await vm.CancelAllAndWaitAsync(); Check(vm.HasUnfinishedTasks && vm.CurrentTask is { IsUnknown: true }, "Unconfirmed task treated as stopped");
         });
         await test("failure and PC/NAS output notifications reach bindings", () =>
         {
@@ -197,9 +202,9 @@ static class LifecycleTests
             var context = SynchronizationContext.Current!;
             var (vm, worker, config, disk) = await Model("deferred", dispatch: action => context.Post(_ => action(), null));
             var run = await Start(vm, "deferred"); await Until(() => worker.Runs.Count == 1);
-            var task = vm.Tasks.Single(); worker.Finish(task.JobId, "succeeded"); await run;
+            var task = vm.CurrentTask!; worker.Finish(task.JobId, "succeeded"); await run;
             vm.Apply(new() { JobId = task.JobId, Type = "finished", State = "unknown" }); await Task.Delay(30);
-            Check(vm.Tasks.Count == 0 && task.State == "succeeded" && disk.Deletes == 1, "Late dispatch corrupted finalized task");
+            Check(vm.Coordinator.Tasks.Count == 0 && task.State == "succeeded" && disk.Deletes == 1, "Late dispatch corrupted finalized task");
             Check(!Directory.GetFiles(Path.Combine(config.DirectoryPath, "tasks"), "*.json").Any(), "Finished record retained");
         });
         await test("finished record survives deletion failure and recovers without execution", async () =>
@@ -211,7 +216,7 @@ static class LifecycleTests
             Check(record.Phase == "finished" && record.Result?.State == "succeeded" && !vm.HasUnfinishedTasks, "Confirmed result not durably retained");
             var recoveredWorker = new ControlledWorker();
             var recovered = new MainViewModel(recoveredWorker, config, "fixture"); await recovered.InitializeAsync();
-            Check(recovered.Tasks.Count == 0 && recoveredWorker.Runs.Count == 0, "Finished recovery reran or retained task");
+            Check(recovered.CurrentTask is null && recoveredWorker.Runs.Count == 0, "Finished recovery reran or retained task");
         });
         await test("shared coordinator: PC limit spans both windows and queues the rest", async () =>
         {
@@ -222,17 +227,19 @@ static class LifecycleTests
             var coordinator = new TaskCoordinator(worker, disk);
             var first = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await first.InitializeAsync();
             var second = new MainViewModel(worker, config, "fixture", null, disk, coordinator); await second.InitializeAsync();
-            Check(ReferenceEquals(first.Tasks, second.Tasks), "Windows do not share one task pool");
-            Check(second.Tasks.Count == 0, "Second window recovered tasks already in the shared pool");
+            Check(ReferenceEquals(first.Coordinator, second.Coordinator), "Windows do not share one task pool");
+            Check(second.CurrentTask is null, "Second window recovered tasks already in the shared pool");
             var runA = await Start(first, "shared-a"); await Until(() => worker.Runs.Count == 1);
             var runB = await Start(second, "shared-b");
             await Task.Delay(350);
-            Check(worker.Runs.Count == 1 && second.Tasks.Any(t => t.IsQueued && t != first.Tasks.First(t => t.IsRunning)),
+            var runningA = first.CurrentTask!;
+            var queuedB = second.CurrentTask!;
+            Check(worker.Runs.Count == 1 && queuedB.IsQueued && runningA.IsRunning && queuedB.JobId != runningA.JobId,
                 "PC limit was applied per window instead of across windows");
             worker.Finish(worker.Runs[0].JobId, "succeeded"); await runA;
             await Until(() => worker.Runs.Count == 2);
             worker.Finish(worker.Runs[1].JobId, "succeeded"); await runB;
-            Check(first.Tasks.Count == 0, "Finished tasks were retained after the shared run");
+            Check(first.Coordinator.Tasks.Count == 0, "Finished tasks were retained after the shared run");
         });
         await test("shared coordinator: NAS tasks serialize across windows", async () =>
         {
@@ -254,7 +261,7 @@ static class LifecycleTests
             await Until(() => worker.Runs.Count == 1 && worker.Runs[0].Engine == "nas");
             var runB = await StartNas(second, "shared-nas-b");
             await Task.Delay(350);
-            Check(worker.Runs.Count(r => r.Engine == "nas") == 1 && second.Tasks.Any(t => t.IsQueued), "NAS tasks ran in parallel across windows");
+            Check(worker.Runs.Count(r => r.Engine == "nas") == 1 && second.CurrentTask?.IsQueued == true, "NAS tasks ran in parallel across windows");
             worker.Finish(worker.Runs[0].JobId, "succeeded"); await runA;
             await Until(() => worker.Runs.Count == 2);
             worker.Finish(worker.Runs[1].JobId, "succeeded"); await runB;
@@ -315,7 +322,7 @@ static class LifecycleTests
             var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(false));
             var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
             await vm.InitializeAsync();
-            Check(vm.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Dead recorded process neither finalized nor removed");
+            Check(vm.Coordinator.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Dead recorded process neither finalized nor removed");
             Check(worker.Runs.Count == 0, "Dead recorded process was relaunched");
             Check(!Directory.EnumerateFiles(Path.Combine(config.DirectoryPath, "tasks"), "*.json").Any(), "Interrupted record was not cleaned up");
         });
@@ -332,16 +339,18 @@ static class LifecycleTests
             await disk.SaveAsync(record);
             var worker = new ControlledWorker();
             var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(true));
-            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
-            await vm.InitializeAsync();
-            var adopted = vm.Tasks.Single();
+            var vm1 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm1.InitializeAsync();
+            var adopted = vm1.CurrentTask!;
             Check(adopted.JobId == record.Request.JobId && adopted.State == "running", "Live recorded process was not adopted as running");
-            var run = await Start(vm, "force-alive-queued");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm2.InitializeAsync();
+            var run = await Start(vm2, "force-alive-queued");
             await Task.Delay(350);
             Check(worker.Runs.Count == 0, "A new task started while the adopted task held the only PC slot");
-            var queued = vm.Tasks.Single(t => t.JobId != record.Request.JobId);
+            var queued = vm2.CurrentTask!;
             Check(queued.IsQueued, "Adopted task released its slot");
-            await vm.CancelTaskAsync(queued); await run;
+            await vm2.CancelTaskAsync(queued); await run;
         });
         await test("recovery without a process identity stays unknown and holds its slot", async () =>
         {
@@ -355,13 +364,17 @@ static class LifecycleTests
             };
             await disk.SaveAsync(record);
             var worker = new ControlledWorker();
-            var vm = new MainViewModel(worker, config, "fixture"); await vm.InitializeAsync();
-            var unresolved = vm.Tasks.Single();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var vm1 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm1.InitializeAsync();
+            var unresolved = vm1.CurrentTask!;
             Check(unresolved.State == "unknown" && unresolved.CanInspect, "Record without a process identity was not kept for inspection");
-            var run = await Start(vm, "force-nopid-queued");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm2.InitializeAsync();
+            var run = await Start(vm2, "force-nopid-queued");
             await Task.Delay(350);
-            Check(worker.Runs.Count == 0 && vm.Tasks.Any(t => t.IsQueued), "Unresolved task released its slot");
-            await vm.CancelTaskAsync(vm.Tasks.Single(t => t.IsQueued)); await run;
+            Check(worker.Runs.Count == 0 && vm2.CurrentTask?.IsQueued == true, "Unresolved task released its slot");
+            await vm2.CancelTaskAsync(vm2.CurrentTask!); await run;
         });
         await test("force close retains records when termination is unconfirmed", async () =>
         {
@@ -373,8 +386,8 @@ static class LifecycleTests
             var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
             await vm.InitializeAsync();
             var run = await Start(vm, "force-unconfirmed");
-            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
-            var task = vm.Tasks.Single();
+            await Until(() => worker.Runs.Count == 1 && vm.CurrentTask is { State: "running" });
+            var task = vm.CurrentTask!;
             var report = await vm.ForceCloseAsync();
             var saved = Wire.Decode<TaskRecord>(await File.ReadAllTextAsync(Path.Combine(config.DirectoryPath, "tasks", task.JobId + ".json")));
             Check(report.Unconfirmed == 1 && report.Terminated == 0 && !report.FullyStopped, "Unconfirmed termination was reported as stopped");
@@ -394,12 +407,12 @@ static class LifecycleTests
             var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
             await vm.InitializeAsync();
             var run = await Start(vm, "force-stopped");
-            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
-            var task = vm.Tasks.Single();
+            await Until(() => worker.Runs.Count == 1 && vm.CurrentTask is { State: "running" });
+            var task = vm.CurrentTask!;
             var report = await vm.ForceCloseAsync();
             Check(report.Terminated == 1 && report.Unconfirmed == 0 && report.FullyStopped, "Confirmed termination was not reported as stopped");
             Check(worker.Terminated.Count == 1 && worker.Terminated[0] == task.JobId, "Force close did not terminate the tracked job");
-            Check(vm.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Terminated task stayed in the pool");
+            Check(vm.Coordinator.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Terminated task stayed in the pool");
             Check(!File.Exists(Path.Combine(config.DirectoryPath, "tasks", task.JobId + ".json")), "Terminated task record was retained");
             worker.Finish(task.JobId, "cancelled"); await run;
         });
@@ -418,7 +431,7 @@ static class LifecycleTests
             var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(true));
             var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
             await vm.InitializeAsync();
-            var adopted = vm.Tasks.Single();
+            var adopted = vm.CurrentTask!;
             Check(adopted.JobId == record.Request.JobId && adopted.State == "running", "Recorded process was not adopted as running before force close");
             var report = await vm.ForceCloseAsync();
             Check(report.Terminated == 1 && report.Unconfirmed == 0, "Adopted process termination was not reported as stopped");
@@ -431,7 +444,7 @@ static class LifecycleTests
         {
             var (vm, worker, config, _) = await Model("job-clean");
             var run = await Start(vm, "job-clean");
-            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
+            await Until(() => worker.Runs.Count == 1 && vm.CurrentTask is { State: "running" });
             var jobs = Path.Combine(config.DirectoryPath, "jobs");
             var jobDirectory = Path.Combine(jobs, worker.Runs[0].JobId);
             Directory.CreateDirectory(jobDirectory);
@@ -455,8 +468,8 @@ static class LifecycleTests
             var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
             await vm.InitializeAsync();
             var run = await Start(vm, "job-unconfirmed");
-            await Until(() => worker.Runs.Count == 1 && vm.Tasks.Any(t => t.State == "running"));
-            var jobId = vm.Tasks.Single().JobId;
+            await Until(() => worker.Runs.Count == 1 && vm.CurrentTask is { State: "running" });
+            var jobId = vm.CurrentTask!.JobId;
             var jobDirectory = Path.Combine(config.DirectoryPath, "jobs", jobId);
             Directory.CreateDirectory(jobDirectory);
             await File.WriteAllTextAsync(Path.Combine(jobDirectory, "worker.pid"),
@@ -483,6 +496,61 @@ static class LifecycleTests
             Check(!Directory.Exists(Path.Combine(jobs, orphan)), "Startup sweep kept a job directory without a record");
             Check(Directory.Exists(Path.Combine(jobs, tracked)), "Startup sweep deleted a job directory that still has a record");
             Check(Directory.Exists(Path.Combine(jobs, "not-a-hex-id")), "Startup sweep deleted a directory with an invalid job id");
+        });
+        await test("window keeps its own task when another window submits", async () =>
+        {
+            var (vm1, worker, config, disk) = await Model("own-task");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, vm1.Coordinator);
+            await vm2.InitializeAsync();
+            var run1 = await Start(vm1, "own-a"); await Until(() => worker.Runs.Count == 1);
+            var run2 = await Start(vm2, "own-b"); await Until(() => vm2.CurrentTask is not null);
+            // 两个窗口各自持有不同的任务：事件按 JobId 路由，不会合并到同一个实例。
+            Check(vm1.CurrentTask is { } a && vm2.CurrentTask is { } b && a.JobId != b.JobId,
+                "Two windows collapsed onto the same task");
+            // 第一个窗口的 CurrentTask 仍是自己发起的那一个，没有被第二个窗口的提交覆盖。
+            Check(vm1.CurrentTask!.Request.Sources[0].EndsWith("own-a.jpg") && vm2.CurrentTask!.Request.Sources[0].EndsWith("own-b.jpg"),
+                "Submitting in another window replaced this window's task");
+            // PcConcurrency=1：第二个任务先排队，第一个结束后才启动。
+            Check(vm2.CurrentTask!.IsQueued && vm1.CurrentTask!.IsRunning, "Second window's task did not queue behind the first");
+            worker.Finish(worker.Runs[0].JobId, "succeeded");
+            await Until(() => worker.Runs.Count == 2);
+            worker.Finish(worker.Runs[1].JobId, "succeeded");
+            await Task.WhenAll(run1, run2);
+        });
+        await test("current task survives removal and reports terminal state", async () =>
+        {
+            var (vm, worker, _, _) = await Model("sticky");
+            var run = await Start(vm, "sticky-a"); await Until(() => worker.Runs.Count == 1);
+            var task = vm.CurrentTask!;
+            worker.Finish(task.JobId, "succeeded"); await run;
+            // 池里已经移除。
+            Check(vm.Coordinator.Tasks.Count == 0, "Finished task was not removed from the pool");
+            // 但窗口还持有它：CurrentTask 是粘性的，结果态仍可展示。
+            Check(ReferenceEquals(vm.CurrentTask, task) && vm.CurrentTask!.State == "succeeded",
+                "Window lost its result after the task left the pool");
+            Check(!vm.CurrentTaskUnfinished, "Finished task still reported as unfinished");
+            // 摘要是窗口自己那一句话：任务自己的 StateTitle（“已完成”），不是池级计数。
+            Check(vm.TaskSummary.StartsWith("已完成", StringComparison.Ordinal) && !vm.TaskSummary.Contains("共 "),
+                $"Summary did not report completion: {vm.TaskSummary}");
+        });
+        await test("task summary describes only this window's task", async () =>
+        {
+            var (vm1, worker, config, disk) = await Model("summary");
+            var vm2 = new MainViewModel(worker, config, "fixture", null, disk, vm1.Coordinator);
+            await vm2.InitializeAsync();
+            var run1 = await Start(vm1, "summary-a"); await Until(() => worker.Runs.Count == 1);
+            var run2 = await Start(vm2, "summary-b"); await Until(() => vm2.CurrentTask is not null);
+            // 每个窗口的摘要都只说自己那一个任务，不出现"共 N 个任务"的池级统计。
+            Check(!vm1.TaskSummary.Contains("共 "), $"Summary leaked pool counts: {vm1.TaskSummary}");
+            Check(!vm2.TaskSummary.Contains("共 "), $"Summary leaked pool counts: {vm2.TaskSummary}");
+            Check(vm1.TaskSummary != vm2.TaskSummary, "Two windows produced an identical summary");
+            // 第一个窗口在跑，第二个在排队：各自的状态才是摘要的主体。
+            Check(!vm1.TaskSummary.Contains("排队中") && vm2.TaskSummary.StartsWith("排队中", StringComparison.Ordinal),
+                $"Summary did not describe each window's own task: '{vm1.TaskSummary}' / '{vm2.TaskSummary}'");
+            worker.Finish(worker.Runs[0].JobId, "succeeded");
+            await Until(() => worker.Runs.Count == 2);
+            worker.Finish(worker.Runs[1].JobId, "succeeded");
+            await Task.WhenAll(run1, run2);
         });
     }
 

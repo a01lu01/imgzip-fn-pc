@@ -30,7 +30,7 @@ public partial class MainViewModel
     }
     private void SetPrimary(CompressionTaskViewModel task)
     {
-        primaryRequest = task.Request; Mirror(task);
+        primaryRequest = task.Request; CurrentTask = task; Mirror(task);
     }
     private void Mirror(CompressionTaskViewModel task)
     {

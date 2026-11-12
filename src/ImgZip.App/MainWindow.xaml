@@ -76,7 +76,7 @@
       <Grid RowSpacing="10">
         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
         <ScrollViewer Grid.Row="0" MaxHeight="240" VerticalScrollBarVisibility="Auto" Visibility="{Binding HasTasks, Converter={StaticResource BoolVisibility}}">
-          <ItemsControl ItemsSource="{Binding Tasks}">
+          <ItemsControl ItemsSource="{Binding Coordinator.Tasks}">
             <ItemsControl.ItemTemplate>
               <DataTemplate x:DataType="core:CompressionTaskViewModel">
                 <Border Style="{StaticResource Surface}" Padding="12,10" Margin="0,0,0,8">

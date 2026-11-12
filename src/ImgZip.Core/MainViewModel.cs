@@ -48,12 +48,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int total;
     [ObservableProperty] private int completed;
     [ObservableProperty] private string preset = "archive-jpeg";
+    /// <summary>
+    /// 本窗口呈现的任务。阶段 2a 只新增，不取代 <see cref="Tasks"/>：
+    /// 任务被路由到本窗口时（<c>SetPrimary</c>）写入，窗口关闭或任务被移除后仍保留，供结果态展示。
+    /// </summary>
+    [ObservableProperty] private CompressionTaskViewModel? currentTask;
     public ObservableCollection<string> Failures { get; } = [];
 
     /// <summary>应用级任务协调者；未显式传入时自建一个，行为与拆分前的单窗口一致。</summary>
     public TaskCoordinator Coordinator { get; }
     public TaskCoordinator.Attachment Attachment { get; }
-    public ObservableCollection<CompressionTaskViewModel> Tasks => Coordinator.Tasks;
 
     public MainViewModel(IWorkerClient worker, ConfigStore store, string enginePath, Action<Action>? dispatch = null, ITaskStore? taskStore = null)
         : this(worker, store, enginePath, dispatch, taskStore, null) { }
@@ -81,6 +85,8 @@ public partial class MainViewModel : ObservableObject
     public bool IsUnknown => State == "unknown";
     public bool CanEdit => Coordinator.TasksReady;
     public bool HasUnfinishedTasks => Coordinator.HasUnfinishedTasks;
+    /// <summary>本窗口是否还有一个未结束的任务。窗口的关闭守卫与"运行中"判断都基于它。</summary>
+    public bool CurrentTaskUnfinished => CurrentTask is { TerminalConfirmed: false };
     public bool CanStart => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
     /// <summary>草稿是否可启动新任务：多任务下不再受“运行中”限制。</summary>
     public bool CanStartTask => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
@@ -89,7 +95,8 @@ public partial class MainViewModel : ObservableObject
     public bool CanOpenOutput => !IsLocked && State is "succeeded" or "partial" && !string.IsNullOrEmpty(OpenOutputPath);
     public bool HasMessage => !string.IsNullOrEmpty(Message);
     public bool HasFailures => Failures.Count > 0;
-    public bool HasTasks => Tasks.Count > 0;
+    /// <summary>应用内是否有任务（池级）。阶段 2 起窗口不再持有任务集合，判据上移到协调者。</summary>
+    public bool HasTasks => Coordinator.Tasks.Count > 0;
     public bool IsIndeterminate => State == "preparing" || (IsRunning && Total == 0);
     public bool CanSetQuality => !Lossless;
     public bool CanResize => ResizeIndex != 0;
@@ -112,16 +119,20 @@ public partial class MainViewModel : ObservableObject
             return $"NAS 并发 {EffectiveNasConcurrency}（上限 {hardware}，{detected}）";
         }
     }
+    /// <summary>
+    /// 本窗口任务的一句话摘要。阶段 2 起窗口只陈述自己那一个任务，
+    /// 池级统计由 <see cref="TaskCoordinator.Tasks"/> 承担。
+    /// </summary>
     public string TaskSummary
     {
         get
         {
-            if (Tasks.Count == 0) return "暂无任务";
-            var running = Tasks.Count(t => t.IsRunning);
-            var queued = Tasks.Count(t => t.IsQueued);
-            var waiting = Tasks.Count(t => t.CanResume);
-            var unknown = Tasks.Count(t => t.IsUnknown);
-            return $"{running} 个进行中 · {queued} 个排队 · {waiting} 个待继续 · {unknown} 个待确认 · 共 {Tasks.Count} 个任务（PC 并发 {EffectivePcConcurrency}）";
+            if (CurrentTask is not { } task) return "暂无任务";
+            var concurrency = task.EngineIndex == 1
+                ? $"NAS 并发 {EffectiveNasConcurrency}"
+                : $"PC 并发 {EffectivePcConcurrency}";
+            var progress = task.ProgressText is { Length: > 0 } text ? $" · {text}" : "";
+            return $"{task.StateTitle} · {task.EngineName} · {concurrency}{progress}";
         }
     }
     public string StateTitle => State switch
@@ -145,13 +156,13 @@ public partial class MainViewModel : ObservableObject
         {
             if (Preset != "custom") Preset = "custom";
         }
-        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(DryRun) or nameof(Lossless) or nameof(ResizeIndex) or nameof(EngineIndex) or nameof(Config) or nameof(PcAvailable) or nameof(NasCores) or nameof(NasMemoryMb) or nameof(Checking) or nameof(Message) or nameof(Preset) or nameof(Quality) or nameof(Pixels) or nameof(NoUpscale) or nameof(CopySkippedFiles) or nameof(FolderSource)) NotifyDerived();
+        if (e.PropertyName is nameof(State) or nameof(Total) or nameof(Completed) or nameof(DryRun) or nameof(Lossless) or nameof(ResizeIndex) or nameof(EngineIndex) or nameof(Config) or nameof(PcAvailable) or nameof(NasCores) or nameof(NasMemoryMb) or nameof(Checking) or nameof(Message) or nameof(Preset) or nameof(Quality) or nameof(Pixels) or nameof(NoUpscale) or nameof(CopySkippedFiles) or nameof(FolderSource) or nameof(CurrentTask)) NotifyDerived();
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
-    private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks)); }
+    private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks)); OnPropertyChanged(nameof(CurrentTaskUnfinished)); }
 
     public async Task InitializeAsync()
     {

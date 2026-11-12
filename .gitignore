@@ -20,8 +20,9 @@ compare_compressed/
 demo-images/*
 !demo-images/README.md
 !demo-images/make-demo-images.py
-# 演示素材的压缩产物，同样由测试产生
+# 演示素材的压缩产物，同样由测试产生；重复运行会出现 _2、_3 等编号目录
 demo-images_compressed/
+demo-images_compressed_*/
 
 # ---- Git/系统 ----
 .git/
