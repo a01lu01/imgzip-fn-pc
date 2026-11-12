@@ -44,23 +44,49 @@ public static class StagingCleaner
     }
 
     /// <summary>
-    /// 启动时兜底：清理 <paramref name="outputDirectory"/> 下所有 <c>.imgzip-</c> 暂存目录。
-    /// 用于覆盖应用崩溃、来不及走强制关闭流程的情况。
+    /// 崩溃兜底：清理某个任务的来源在输出目录里留下的暂存目录。
+    /// 只在恢复流程里对「进程已确认死亡」的记录调用——那种情况下这些目录确定没有读者。
+    ///
+    /// 为什么不提供「扫描整个目录删掉所有 .imgzip-*」的版本：暂存目录活在输出目录里，
+    /// 而另一个仍在跑的任务可能正往同一个输出目录写。前缀里只有 jobId 能区分归属，
+    /// 丢掉 jobId 的批量删除会把别人的活干掉。
     /// </summary>
-    public static IReadOnlyList<string> CleanAll(string? outputDirectory)
+    public static IReadOnlyList<string> SweepSources(IEnumerable<string> sources, string jobId)
     {
         var failures = new List<string>();
-        if (string.IsNullOrWhiteSpace(outputDirectory) || !Directory.Exists(outputDirectory)) return failures;
+        if (string.IsNullOrWhiteSpace(jobId)) return failures;
+        // worker 的输出目录是「来源根目录 + _compressed」，已存在时加 _2、_3 后缀。
+        var root = SourceRoot(sources);
+        if (root is null) return failures;
+        var parent = Path.GetDirectoryName(root);
+        if (string.IsNullOrWhiteSpace(parent) || !Directory.Exists(parent)) return failures;
+        var prefix = Path.GetFileName(root) + "_compressed";
         IEnumerable<string> candidates;
-        try { candidates = Directory.EnumerateDirectories(outputDirectory, Prefix + "*", SearchOption.TopDirectoryOnly).ToArray(); }
+        try
+        {
+            candidates = Directory.EnumerateDirectories(parent, prefix + "*", SearchOption.TopDirectoryOnly).ToArray();
+        }
         catch (IOException) { return failures; }
         catch (UnauthorizedAccessException) { return failures; }
         foreach (var candidate in candidates)
         {
-            try { Directory.Delete(candidate, recursive: true); }
-            catch (IOException) { failures.Add(candidate); }
-            catch (UnauthorizedAccessException) { failures.Add(candidate); }
+            // 只认 _compressed、_compressed_2 这种形态，避免把「_compressed-backup」也算进来。
+            var name = Path.GetFileName(candidate);
+            var suffix = name[prefix.Length..];
+            if (suffix.Length > 0 && !(suffix[0] == '_' && suffix[1..].All(char.IsAsciiDigit))) continue;
+            failures.AddRange(Clean(candidate, jobId));
         }
         return failures;
+    }
+
+    /// <summary>与 worker 一致地取「来源根目录」：文件夹则取自身，文件则取所在目录。</summary>
+    private static string? SourceRoot(IEnumerable<string> sources)
+    {
+        var first = sources.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(first)) return null;
+        var trimmed = first.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (Directory.Exists(trimmed)) return trimmed;
+        var parent = Path.GetDirectoryName(trimmed);
+        return string.IsNullOrWhiteSpace(parent) ? null : parent;
     }
 }

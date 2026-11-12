@@ -282,6 +282,11 @@ public sealed class TaskCoordinator
     {
         task.Message = "上次任务已中断：执行进程已退出，未写出终态。";
         task.ResultSummary = "任务已中断";
+        // 进程已确认死亡，它留下的暂存目录确定没有读者，顺手收掉。
+        // 崩溃退出时 worker 的 finally 不会执行，这些半成品会一直躺在输出目录里。
+        var staging = StagingCleaner.SweepSources(task.Request.Sources, task.JobId);
+        if (staging.Count > 0)
+            task.Message += $"\n有 {staging.Count} 个半成品暂存目录无法删除，请手动清理。";
         task.Apply(new()
         {
             JobId = task.JobId, Type = "finished", State = "cancelled",

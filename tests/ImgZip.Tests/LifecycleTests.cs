@@ -688,6 +688,92 @@ static class LifecycleTests
             Check(!queued.HasQueueReason, $"NAS queue reason outlived the wait: '{queued.QueueReason}'");
             worker.Finish(worker.Runs[1].JobId, "succeeded"); await runB;
         });
+        await test("staging sweep finds numbered output directories but leaves other jobs alone", async () =>
+        {
+            // 输出目录是「来源根目录 + _compressed」的兄弟目录，worker 已存在时会加 _2、_3 后缀。
+            var parent = Path.Combine(scratch, "sweep", "numbered");
+            var source = Path.Combine(parent, "src");
+            Directory.CreateDirectory(source);
+            var jobId = Guid.NewGuid().ToString("N");
+            var otherJob = Guid.NewGuid().ToString("N");
+            async Task<string> Stage(string output)
+            {
+                var staging = Path.Combine(parent, output, $".imgzip-{jobId}-b1");
+                Directory.CreateDirectory(staging);
+                await File.WriteAllTextAsync(Path.Combine(staging, "partial.bin"), "half-written");
+                return staging;
+            }
+            var plain = await Stage("src_compressed");
+            var numbered = await Stage("src_compressed_2");
+            var foreign = Path.Combine(parent, "src_compressed_3", $".imgzip-{otherJob}-b1");
+            Directory.CreateDirectory(foreign);
+            await File.WriteAllTextAsync(Path.Combine(foreign, "partial.bin"), "other job");
+            // 名字前缀相同但不是编号后缀：整个目录都不该被当成输出目录。
+            var backup = Path.Combine(parent, "src_compressed-backup", $".imgzip-{jobId}-b1");
+            Directory.CreateDirectory(backup);
+            await File.WriteAllTextAsync(Path.Combine(backup, "partial.bin"), "backup copy");
+            var failures = StagingCleaner.SweepSources([source], jobId);
+            Check(failures.Count == 0, "Staging sweep reported a failure for directories it owns");
+            Check(!Directory.Exists(plain) && !Directory.Exists(numbered), "Staging sweep left this job's staging directories behind");
+            Check(Directory.Exists(foreign) && File.Exists(Path.Combine(foreign, "partial.bin")), "Staging sweep deleted another job's staging directory");
+            Check(Directory.Exists(backup) && File.Exists(Path.Combine(backup, "partial.bin")), "Staging sweep deleted a directory whose name is not a numbered output");
+        });
+        await test("recovering a dead task clears its staging directories", async () =>
+        {
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "dead-staging"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var parent = Path.Combine(scratch, "dead-staging");
+            var source = Path.Combine(parent, "src");
+            Directory.CreateDirectory(source);
+            var record = new TaskRecord
+            {
+                Request = new() { Sources = [source], StateDirectory = config.DirectoryPath },
+                Phase = "running", WorkerPid = 999999, WorkerStartedAt = DateTimeOffset.UtcNow
+            };
+            await disk.SaveAsync(record);
+            var staging = Path.Combine(source + "_compressed", $".imgzip-{record.Request.JobId}-b1");
+            Directory.CreateDirectory(staging);
+            await File.WriteAllTextAsync(Path.Combine(staging, "partial.bin"), "half-written");
+            var worker = new ControlledWorker();
+            var coordinator = new TaskCoordinator(worker, disk, null, new FixedProbe(false));
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            Check(!Directory.Exists(staging), "Recovered dead task left its staging directory behind");
+            Check(vm.CurrentTask is { State: "cancelled" }, "Interrupted task was not finalized as cancelled");
+            Check(vm.Coordinator.Tasks.Count == 0 && !vm.HasUnfinishedTasks, "Interrupted task stayed in the pool");
+            Check(worker.Runs.Count == 0, "Interrupted task was relaunched instead of finalized");
+        });
+        await test("force close reports staging directories it could not remove", async () =>
+        {
+            // 句柄独占只在 Windows 上阻止目录删除（POSIX 允许删除已打开的文件）。
+            if (!OperatingSystem.IsWindows()) return;
+            var config = new ConfigStore(Path.Combine(scratch, "lifecycle", "force-staging"));
+            await config.SaveAsync(new() { PcConcurrency = 1 });
+            var disk = new TaskStore(config.DirectoryPath);
+            var worker = new StoppableWorker();
+            var coordinator = new TaskCoordinator(worker, disk);
+            var vm = new MainViewModel(worker, config, "fixture", null, disk, coordinator);
+            await vm.InitializeAsync();
+            var run = await Start(vm, "force-staging");
+            await Until(() => worker.Runs.Count == 1 && vm.CurrentTask is { State: "running" });
+            var task = vm.CurrentTask!;
+            var output = Path.Combine(scratch, "force-staging", "output");
+            var staging = Path.Combine(output, $".imgzip-{task.JobId}-b1");
+            Directory.CreateDirectory(staging);
+            var locked = Path.Combine(staging, "partial.bin");
+            await File.WriteAllTextAsync(locked, "half-written");
+            // 强制关闭只按 task.OutputPath 清暂存；执行层替身不产生 Output，就补一条等价的输出事件。
+            vm.Apply(new() { JobId = task.JobId, Type = "file", State = "succeeded", Index = 0, Total = 1, Completed = 1, Succeeded = 1, Output = output });
+            await Until(() => task.OutputPath == output);
+            using var handle = new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None);
+            var report = await vm.ForceCloseAsync();
+            Check(report.Terminated == 1 && report.CleanupErrors.Count > 0, "Force close did not report the staging directory it could not remove");
+            Check(report.CleanupErrors.Any(failure => failure.Contains($".imgzip-{task.JobId}")), "Reported path is not the staging directory that survived");
+            Check(vm.Message.Contains("无法删除"), $"Force close did not surface the cleanup failure: '{vm.Message}'");
+            Check(Directory.Exists(staging), "Locked staging directory disappeared without being deleted");
+            worker.Finish(task.JobId, "cancelled"); await run;
+        });
     }
 
     private sealed class ControlledWorker : IWorkerClient

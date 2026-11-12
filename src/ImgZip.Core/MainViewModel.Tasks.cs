@@ -66,9 +66,14 @@ public partial class MainViewModel
     public async Task<ForceCloseReport> ForceCloseAsync()
     {
         var report = await Coordinator.ForceCloseAsync(CurrentTask?.JobId);
-        if (report.Terminated > 0) Message = "";
+        var notes = new List<string>();
         if (report.Unconfirmed > 0)
-            Message = $"{report.Unconfirmed} 个任务的进程未能确认停止；记录已保留，下次启动会自动判定。";
+            notes.Add($"{report.Unconfirmed} 个任务的进程未能确认停止；记录已保留，下次启动会自动判定。");
+        // 进程杀掉了但暂存目录删不掉：半成品会一直躺在输出目录里，必须让用户知道。
+        if (report.CleanupErrors.Count > 0)
+            notes.Add($"有 {report.CleanupErrors.Count} 个半成品暂存目录无法删除，请手动清理输出目录。");
+        if (notes.Count > 0) Message = string.Join("\n", notes);
+        else if (report.Terminated > 0) Message = "";
         NotifyTasks();
         return report;
     }
