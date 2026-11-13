@@ -221,16 +221,40 @@ public bool HasResultSummary => !string.IsNullOrEmpty(ResultSummary);
 
 71 组测试通过。
 
-### 未处理的一项
+### 附带的第二项：消息两处重复 —— 已修复
 
-任务运行时同一句进度文案出现两次（InfoBar 与任务卡片内各一次）：
+任务运行时同一句进度文案出现两次（顶部 InfoBar 与任务卡片内各一次）：
 
 ```
 InfoBar:   正在建立文件清单
 任务卡片:  正在建立文件清单
 ```
 
-原因是 `Mirror` 把 `task.Message` 抄给了 `MainViewModel.Message`（`MainViewModel.Tasks.cs:40`），而这两处分别绑定。这不属于本次问题范围，未处理；若要去重，应让 InfoBar 不再镜像任务消息（只保留与任务无关的提示，如配置读取失败、强制关闭清理失败）。
+原因是 `Mirror` 把 `task.Message` 抄给了 `MainViewModel.Message`（`MainViewModel.Tasks.cs:40`），而这两处分别绑定：
+
+```xml
+<InfoBar Message="{Binding Message}" />                          <!-- 窗口层的 Message -->
+<TextBlock Text="{Binding Message}" />                            <!-- 任务卡片，DataContext=CurrentTask -->
+```
+
+**修复**：`Mirror` 不再镜像 `Message`。两个 `Message` 各有归属：
+
+| 位置 | 归属 | 内容 |
+| --- | --- | --- |
+| 任务卡片内 | 任务 | 进度与诊断（「正在建立文件清单」「正在压缩第一批」…） |
+| 顶部 InfoBar | 窗口 | 与任务无关的提示（配置读不出、来源不合法、强制关闭清不干净） |
+
+这不只是观感问题。镜像还有一个更严重的后果：任务每次发进度事件都会**覆盖窗口级错误提示**——用户看到「配置无法读取，请检查设置」，任务一开始跑就被顶掉，再也看不到。一条本该留着的错误被一条「正在进行」顶掉，这才是真正该修的。
+
+新增测试 `task progress lives on the card and window notices stay on the window` 同时锁住这两点：任务消息不进窗口层，以及窗口级提示不被任务事件覆盖。
+
+**`ResultSummary` 不镜像，但保留窗口级的草稿文案。** 任务卡片用自己的 `ResultSummary`（终态才有值），窗口底部的 `ResultSummary`（「原始图片保持不变」）绑定了 `ShowDraft`，草稿收起后随之隐藏，避免与任务卡片的结果摘要重复显示同一句。
+
+### 验证
+
+71 → 72 组测试通过。变异：把 `Message = task.Message` 加回 `Mirror` → `Window surface echoed a task message: '正在建立文件清单'`，被抓住。
+
+实机验证（24 张 / 270 MB）任务进行中：进度文案只在任务卡片出现一次，顶部 InfoBar 不显示任务消息，窗口底部草稿文案正常显示「原始图片保持不变」。
 
 ---
 

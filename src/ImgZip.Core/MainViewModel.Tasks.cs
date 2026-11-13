@@ -37,7 +37,14 @@ public partial class MainViewModel
         if (primaryRequest?.JobId == task.JobId)
         {
             State = task.State; Total = task.Total; Completed = task.Completed; CurrentFile = task.CurrentFile;
-            Message = task.Message; ResultSummary = task.ResultSummary; OutputPath = task.OutputPath; OpenOutputPath = task.OpenOutputPath;
+            // Message 与 ResultSummary 都不镜像：它们各有归属者。
+            //   Message       —— 任务的进度与诊断，显示在任务卡片里；窗口这一层留给与任务无关的
+            //                    提示（配置读不出、来源不合法、强制关闭清不干净）。
+            //   ResultSummary —— 任务的真实结果摘要由任务卡片自述；窗口这一层是草稿的
+            //                    「原始图片保持不变」，任务跑起来时把它清空反而丢信息。
+            // 早先两条一起镜像，后果有两个：同一句「正在建立文件清单」在顶部 InfoBar 与任务卡片
+            // 各出现一次；以及任务消息会顺手把窗口级的错误提示覆盖掉。
+            OutputPath = task.OutputPath; OpenOutputPath = task.OpenOutputPath;
             Failures.Clear(); foreach (var failure in task.Failures) Failures.Add(failure);
             NotifyDerived();
         }

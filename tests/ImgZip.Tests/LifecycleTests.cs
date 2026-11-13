@@ -145,7 +145,8 @@ static class LifecycleTests
             {
                 var (vm, worker, _, _) = await Model("save-fail-" + phase, phase);
                 await (await Start(vm, "fail-save-" + phase));
-                Check(worker.Runs.Count == 0 && vm.CurrentTask is { State: "failed" } && vm.HasMessage, "Worker launched without durable record");
+                // 错误归属任务：显示在任务卡片里。窗口级 Message 只留给与任务无关的提示。
+                Check(worker.Runs.Count == 0 && vm.CurrentTask is { State: "failed", HasMessage: true }, "Worker launched without durable record or the failure was hidden");
             });
         }
         await test("draft is frozen while running and the submitted request stays immutable", async () =>
@@ -622,6 +623,24 @@ static class LifecycleTests
             // 任务结束后草稿区收起：窗口只留结果，不做第二次任务。
             Check(!vm.ShowDraft && vm.HasCurrentTask, "Draft stayed open after the task finished");
             Check(!vm.CurrentTaskUnfinished, "Finished task was still reported as unfinished");
+        });
+        await test("task progress lives on the card and window notices stay on the window", async () =>
+        {
+            // 两处 Message 各有归属：任务卡片显示任务的进度与诊断，窗口顶部的 InfoBar 只显示
+            // 与任务无关的提示。早先 Mirror 把 task.Message 抄进窗口 Message，同一句文案在两处
+            // 各出现一次，而且任务消息会顺手覆盖掉窗口级错误。
+            var (vm, worker, _, _) = await Model("message-ownership");
+            var run = await Start(vm, "ownership-a"); await Until(() => worker.Runs.Count == 1);
+            var task = vm.CurrentTask!;
+            vm.Apply(new() { JobId = task.JobId, Type = "phase", State = "preparing", Message = "正在建立文件清单" });
+            await Until(() => task.Message == "正在建立文件清单");
+            Check(!vm.HasMessage, $"Window surface echoed a task message: '{vm.Message}'");
+            // 窗口级提示不受任务事件影响，也不会被任务消息覆盖。
+            vm.Message = "配置无法读取，请检查设置。";
+            vm.Apply(new() { JobId = task.JobId, Type = "phase", State = "preparing", Message = "正在压缩第一批" });
+            await Until(() => task.Message == "正在压缩第一批");
+            Check(vm.Message == "配置无法读取，请检查设置。", $"Task message overwrote a window notice: '{vm.Message}'");
+            worker.Finish(task.JobId, "succeeded"); await run;
         });
         await test("finished window reports itself idle while another window still runs", async () =>
         {

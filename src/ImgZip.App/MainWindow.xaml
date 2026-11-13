@@ -110,7 +110,8 @@
           <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
           <StackPanel Spacing="3" VerticalAlignment="Center">
             <TextBlock Text="{Binding TaskSummary}" FontSize="13" FontWeight="SemiBold" />
-            <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
+            <!-- 草稿级的说明（原始图片保持不变）；任务结束、草稿收起后由任务卡片自述结果。 -->
+            <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" Visibility="{Binding ShowDraft, Converter={StaticResource BoolVisibility}}" />
           </StackPanel>
           <Button Grid.Column="1" Content="{Binding StartText}" Style="{StaticResource AccentButtonStyle}" IsEnabled="{Binding CanStartTask}" Click="Start_Click" MinWidth="132" VerticalAlignment="Center" Visibility="{Binding ShowStartButton, Converter={StaticResource BoolVisibility}}" />
         </Grid>
