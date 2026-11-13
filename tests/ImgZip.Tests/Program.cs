@@ -116,18 +116,25 @@ await Test("unknown task retained; draft stays editable; inspection recovers", a
     await vm.StartAsync();
     Check(vm.IsUnknown && vm.CurrentTask?.IsUnknown == true, "Unknown task was not retained");
     Check(Directory.GetFiles(Path.Combine(store.DirectoryPath, "tasks"), "*.json").Length == 1, "Unresolved task record missing");
-    Check(vm.CanEdit, "Draft controls should remain enabled");
-    vm.ClearSources(); Check(vm.SourcePath != path, "Draft should stay editable while a task is unresolved");
+    // 任务已承办：草稿区仍显示可读信息，但不再可编辑——窗口一窗一任务，改了也不会生效。
+    Check(!vm.CanEdit && vm.ShowDraft, "Draft should be visible but frozen while a task is unresolved");
+    vm.ClearSources(); Check(vm.SourcePath == path, "Draft changed while a task was unresolved");
     await vm.InspectAsync(); Check(vm.State == "succeeded" && vm.CurrentTask is { IsUnknown: false }, "Inspection did not recover");
     Check(!File.Exists(Path.Combine(store.DirectoryPath, "active-job.json")), "Confirmed task marker retained");
     var jobId = mock.JobId;
     vm.Apply(new WorkerEvent { JobId = jobId, Type = "finished", State = "unknown" });
     Check(vm.State == "succeeded", "Late unknown replaced confirmed success");
+    // 终结后草稿区收起，窗口只剩结果。
+    Check(!vm.ShowDraft, "Draft stayed open after the task was confirmed");
     mock.PauseRun = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    await vm.SetSourcesAsync([path]);
-    var running = vm.StartAsync();
-    await vm.SetSourcesAsync([Path.Combine(scratch, "replacement.jpg")]);
-    Check(vm.SourcePath.EndsWith("replacement.jpg"), "Draft should accept new sources while a task runs");
+    var second = new MainViewModel(mock, store, "unused", null, null, vm.Coordinator);
+    await second.InitializeAsync();
+    await second.SetSourcesAsync([path]);
+    await second.SetSourcesAsync([Path.Combine(scratch, "replacement.jpg")]);
+    Check(second.SourcePath.EndsWith("replacement.jpg"), "Draft should accept new sources before its task starts");
+    var running = second.StartAsync();
+    await second.SetSourcesAsync([path]);
+    Check(second.SourcePath.EndsWith("replacement.jpg"), "Draft changed while its task ran");
     mock.PauseRun.SetResult(); await running;
 });
 
@@ -248,8 +255,11 @@ await Test("copy preference applies to folders but not file sources", async () =
 
     var replacement = Path.Combine(scratch, "copy-source-image.jpg");
     await File.WriteAllTextAsync(replacement, "image");
-    await vm.SetSourcesAsync([replacement]);
-    var fileRun = vm.StartAsync();
+    // 一窗一任务：第二个来源要由另一个窗口承接，同一窗口承办后草稿已冻结。
+    var fileWindow = new MainViewModel(mock, store, "unused", null, null, vm.Coordinator);
+    await fileWindow.InitializeAsync();
+    await fileWindow.SetSourcesAsync([replacement]);
+    var fileRun = fileWindow.StartAsync();
     await WaitUntilAsync(() => mock.RunRequests.Count == 2, "File task did not start");
     Check(!mock.RunRequests[1].Options.CopySkippedFiles, "File task incorrectly enabled folder-only copy option");
     mock.ReleaseRuns();
@@ -277,6 +287,18 @@ await Test("copy events update task progress and failures", () =>
     Check(((string)property!.GetValue(task)!).Contains("1 / 2") && ((string)property.GetValue(task)!).Contains("1.0 KB"), "Copy progress text incorrect");
     task.Apply(new WorkerEvent { JobId = task.JobId, Type = "copy", State = "failed", CopyTotal = 2, CopyCompleted = 2, Copied = 1, CopyFailed = 1, CopiedBytes = 1024, Path = "b.mov", Message = "locked" });
     Check(task.HasFailures && task.Failures.Single().Contains("复制失败") && task.Failures.Single().Contains("locked"), "Copy failure was not surfaced");
+    return Task.CompletedTask;
+});
+await Test("a running task carries no result summary yet", () =>
+{
+    // 结果摘要只在终态有意义。默认值若是「排队等待执行」，任务跑起来之后卡片会
+    // 一边写「正在压缩…」一边写「排队等待执行」，自相矛盾。
+    var task = new CompressionTaskViewModel(new() { Engine = "pc", Sources = ["folder"] }, 0);
+    Check(!task.HasResultSummary && task.ResultSummary.Length == 0, "Fresh task should not claim a result yet");
+    task.Apply(new WorkerEvent { JobId = task.JobId, Type = "manifest", Total = 2 });
+    Check(!task.HasResultSummary, "Running task should not carry a result summary");
+    task.Apply(new WorkerEvent { JobId = task.JobId, Type = "finished", State = "succeeded", Total = 2, Completed = 2, Succeeded = 2 });
+    Check(task.HasResultSummary, "Finished task should carry a result summary");
     return Task.CompletedTask;
 });
 await Test("dry run summary reports planned copied files", () =>

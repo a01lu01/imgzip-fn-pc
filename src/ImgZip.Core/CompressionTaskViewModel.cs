@@ -50,7 +50,9 @@ public partial class CompressionTaskViewModel : ObservableObject
     [ObservableProperty] private string currentFile = "";
     [ObservableProperty] private string outputPath = "等待开始";
     [ObservableProperty] private string openOutputPath = "";
-    [ObservableProperty] private string resultSummary = "排队等待执行";
+    // 结果摘要只在终态有意义。默认值曾经是「排队等待执行」，导致任务已经跑起来之后
+    // 卡片上仍写着排队，与上一行的「正在压缩…」自相矛盾。空串 + 卡片按可见性隐藏即可。
+    [ObservableProperty] private string resultSummary = "";
     [ObservableProperty] private bool checking;
     [ObservableProperty] private string concurrencyText = "";
     [ObservableProperty] private int copyTotal;
@@ -85,6 +87,8 @@ public partial class CompressionTaskViewModel : ObservableObject
     public bool CanOpenOutput => !IsRunning && State is "succeeded" or "partial" && !string.IsNullOrEmpty(OpenOutputPath);
     public bool HasFailures => Failures.Count > 0;
     public bool HasMessage => !string.IsNullOrEmpty(Message);
+    /// <summary>结果摘要为空时（任务还在跑，尚无结果）整行隐藏，不留一条空文案。</summary>
+    public bool HasResultSummary => !string.IsNullOrEmpty(ResultSummary);
     public bool IsIndeterminate => State == "preparing" || (IsRunning && Total == 0);
     public double Progress => Total == 0 ? 0 : 100d * Completed / Total;
     public string ProgressText => Total == 0 ? "" : $"{Completed} / {Total}";
@@ -107,6 +111,7 @@ public partial class CompressionTaskViewModel : ObservableObject
         if (e.PropertyName == nameof(State)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(HasQueueReason)));
         if (e.PropertyName == nameof(OpenOutputPath)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(CanOpenOutput)));
         if (e.PropertyName == nameof(Message)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(HasMessage)));
+        if (e.PropertyName == nameof(ResultSummary)) base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(HasResultSummary)));
     }
 
     public void Apply(WorkerEvent e)

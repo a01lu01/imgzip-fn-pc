@@ -105,5 +105,6 @@ NAS 侧需要 Bash 4+、GNU find/stat/coreutils、util-linux 的 setsid、ps/awk
 - [引擎默认选择：自动推断 / 固定本机 / 记住上次](docs/FEATURES-engine-mode-selection.md)
 - [一窗一任务与新建任务置前](docs/FEATURES-one-task-per-window.md)
 - [0.3.5 NAS 并发事故与修复](docs/UI-ISSUES-0.3.5-nas-concurrency.md)
+- [0.5.0 后续问题记录（已记录，未实施）](docs/UI-ISSUES-0.5.0-followup.md)
 - [0.3.4 修复记录](docs/UI-ISSUES-0.3.3-0.3.4.md)
 - 界面方案演示（HTML，本地打开）：[design-demo](design-demo/README.md)

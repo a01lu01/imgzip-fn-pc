@@ -83,7 +83,12 @@ public partial class MainViewModel : ObservableObject
     public bool IsRunning => State is "preparing" or "running" or "cancelling";
     public bool IsLocked => IsRunning || State == "unknown";
     public bool IsUnknown => State == "unknown";
-    public bool CanEdit => Coordinator.TasksReady;
+    /// <summary>
+    /// 草稿区的编辑控件是否可用。窗口一旦承办任务就不再接受修改——
+    /// 任务进行中仍要显示草稿（用户刚确认的设置、来源、输出路径都还要看得到），
+    /// 但不能改，否则改的是草稿、跑的是快照，界面上又分不清哪个生效。
+    /// </summary>
+    public bool CanEdit => Coordinator.TasksReady && CurrentTask is null;
     public bool HasUnfinishedTasks => Coordinator.HasUnfinishedTasks;
     /// <summary>本窗口是否还有一个未结束的任务。窗口的关闭守卫与"运行中"判断都基于它。</summary>
     public bool CurrentTaskUnfinished => CurrentTask is { TerminalConfirmed: false };
@@ -92,13 +97,18 @@ public partial class MainViewModel : ObservableObject
     /// <summary>草稿里是否已经有来源。双击启动时用来判断「这个空白窗口还能不能复用」。</summary>
     public bool HasSources => sources.Length > 0;
     /// <summary>
-    /// 草稿区是否还可用。窗口是单次使用的：一旦承办了任务就不再接受新来源，
-    /// 否则「一窗一任务」会退化成「一窗一串任务」，又回到多任务挤在一处的问题。
+    /// 草稿区是否显示。窗口是单次使用的：任务**结束后**草稿区收起，只剩结果与「打开输出」。
+    ///
+    /// 判据是「任务已确认终态」而不是「是否已有任务」：后者会在用户点下「开始压缩」的瞬间
+    /// 就清空整个上半屏，而那一刻他刚确认完设置，最需要能看见自己选了什么。
+    /// 任务进行中草稿区保持可见但只读（<see cref="CanEdit"/> 为 false）。
     /// </summary>
-    public bool ShowDraft => CurrentTask is null;
+    public bool ShowDraft => CurrentTask is not { TerminalConfirmed: true };
     public bool CanStart => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
-    /// <summary>草稿是否可启动新任务：多任务下不再受“运行中”限制。</summary>
+    /// <summary>草稿是否可启动新任务。窗口只做一次任务，承办后不再启动第二个。</summary>
     public bool CanStartTask => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
+    /// <summary>是否显示「开始压缩」按钮。窗口承办任务后这个入口就该消失，而不是留一个点不动的灰按钮。</summary>
+    public bool ShowStartButton => CurrentTask is null;
     public bool CanCancel => State is "preparing" or "running";
     public bool CanInspect => State == "unknown" && !Checking;
     public bool CanOpenOutput => !IsLocked && State is "succeeded" or "partial" && !string.IsNullOrEmpty(OpenOutputPath);
@@ -169,9 +179,16 @@ public partial class MainViewModel : ObservableObject
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(HasCurrentTask), nameof(ShowDraft), nameof(HasSources), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(ShowStartButton), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(HasCurrentTask), nameof(ShowDraft), nameof(HasSources), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
-    private void NotifyTasks() { OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks)); OnPropertyChanged(nameof(CurrentTaskUnfinished)); }
+    // ShowDraft 依赖 CurrentTask.TerminalConfirmed：任务走到终态时 CurrentTask 引用没变，
+    // 只在 CurrentTask 赋值那一刻通知过，因此这里必须补一次，否则草稿区永远不会收起。
+    private void NotifyTasks()
+    {
+        OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks));
+        OnPropertyChanged(nameof(CurrentTaskUnfinished)); OnPropertyChanged(nameof(ShowDraft)); OnPropertyChanged(nameof(ShowStartButton));
+        OnPropertyChanged(nameof(CanEdit)); OnPropertyChanged(nameof(CanStartTask)); OnPropertyChanged(nameof(CanStart));
+    }
 
     public async Task InitializeAsync()
     {
@@ -193,6 +210,9 @@ public partial class MainViewModel : ObservableObject
     }
     public async Task SetSourcesAsync(IEnumerable<string> selection)
     {
+        // 草稿在任务承办后是只读的：界面上按钮已禁用，但拖放/命令行仍在事件层可达，
+        // 所以把约束落在模型上，而不是只靠 XAML 的 IsEnabled。
+        if (!CanEdit) return;
         var paths = selection.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         if (paths.Length == 0) return;
         if (paths.Length > 1 && (paths.Any(Directory.Exists) || paths.Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1))
@@ -218,6 +238,7 @@ public partial class MainViewModel : ObservableObject
     }
     public void ClearSources()
     {
+        if (!CanEdit) return;
         sources = []; FolderSource = false; State = "empty"; SourceTitle = "将图片或文件夹拖到这里"; SourcePath = "支持 JPG、PNG、WebP、GIF";
         SourceSummary = "添加来源后开始"; OutputPath = "选择来源后自动生成"; Message = ""; NotifyDerived();
     }

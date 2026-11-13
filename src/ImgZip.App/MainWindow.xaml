@@ -92,7 +92,7 @@
                 <TextBlock Text="{Binding QueueReason}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" Visibility="{Binding HasQueueReason, Converter={StaticResource BoolVisibility}}" />
                 <TextBlock Text="{Binding ConcurrencyText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" TextTrimming="CharacterEllipsis" />
                 <TextBlock Text="{Binding CopyProgressText}" FontSize="11" Foreground="{ThemeResource SubtextBrush}" Visibility="{Binding HasCopyProgress, Converter={StaticResource BoolVisibility}}" />
-                <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
+                <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasResultSummary, Converter={StaticResource BoolVisibility}}" />
                 <TextBlock Text="{Binding Message}" Style="{StaticResource SecondaryText}" Visibility="{Binding HasMessage, Converter={StaticResource BoolVisibility}}" />
               </StackPanel>
               <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center" MinWidth="96">
@@ -112,7 +112,7 @@
             <TextBlock Text="{Binding TaskSummary}" FontSize="13" FontWeight="SemiBold" />
             <TextBlock Text="{Binding ResultSummary}" Style="{StaticResource SecondaryText}" />
           </StackPanel>
-          <Button Grid.Column="1" Content="{Binding StartText}" Style="{StaticResource AccentButtonStyle}" IsEnabled="{Binding CanStartTask}" Click="Start_Click" MinWidth="132" VerticalAlignment="Center" Visibility="{Binding ShowDraft, Converter={StaticResource BoolVisibility}}" />
+          <Button Grid.Column="1" Content="{Binding StartText}" Style="{StaticResource AccentButtonStyle}" IsEnabled="{Binding CanStartTask}" Click="Start_Click" MinWidth="132" VerticalAlignment="Center" Visibility="{Binding ShowStartButton, Converter={StaticResource BoolVisibility}}" />
         </Grid>
       </Grid>
     </Border>

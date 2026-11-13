@@ -148,18 +148,21 @@ static class LifecycleTests
                 Check(worker.Runs.Count == 0 && vm.CurrentTask is { State: "failed" } && vm.HasMessage, "Worker launched without durable record");
             });
         }
-        await test("draft remains enabled while submitted request is immutable", async () =>
+        await test("draft is frozen while running and the submitted request stays immutable", async () =>
         {
             var (vm, worker, _, _) = await Model("draft");
             vm.Threads = 1;
             var first = await Start(vm, "draft-original"); await Until(() => worker.Runs.Count == 1);
             var captured = worker.Runs[0];
-            Check(vm.CanEdit && vm.HasUnfinishedTasks, "Draft controls disabled during execution");
-            await vm.SetSourcesAsync([Path.Combine(scratch, "draft-new.png")]); vm.SelectPreset("webp-share");
-            vm.EngineIndex = 1; vm.Config = vm.Config with { Server = "new-nas.local", NasHosts = ["new-nas.local"] };
+            // 任务承办后草稿只读：界面上按钮禁用，模型层的来源入口也同样拒绝修改。
+            Check(!vm.CanEdit && vm.HasUnfinishedTasks, "Draft stayed editable during execution");
+            await vm.SetSourcesAsync([Path.Combine(scratch, "draft-new.png")]); vm.ClearSources();
+            Check(vm.SourcePath.EndsWith("draft-original.jpg"), "Draft accepted a new source while its task ran");
+            // 已提交的请求是快照：草稿怎么变都不影响它。
             Check(captured.Sources[0].EndsWith("draft-original.jpg") && captured.Options.Format == "jpeg"
                 && captured.Engine == "pc" && captured.Config.Server != "new-nas.local", "Draft mutated submitted snapshot");
-            Check(vm.CanEdit && vm.HasUnfinishedTasks && !vm.IsLocked, "Close guard must consider tasks despite draft ready state");
+            // 关闭守卫看的是本窗口还有没有未结束的任务（不是草稿是否可编辑）。
+            Check(vm.HasUnfinishedTasks && vm.CurrentTaskUnfinished, "Close guard must consider tasks despite draft ready state");
             worker.Finish(captured.JobId, "succeeded"); await first;
         });
         await test("cancel all stops active tasks and all waiters before slots reopen", async () =>
@@ -605,16 +608,19 @@ static class LifecycleTests
             }
             await Task.WhenAll(run1, run2);
         });
-        await test("window stops accepting new work once it owns a task", async () =>
+        await test("window keeps its draft visible but read-only while the task runs", async () =>
         {
             var (vm, worker, _, _) = await Model("window-single-use");
-            Check(vm.ShowDraft && !vm.HasCurrentTask, "Fresh window should still show its draft");
+            Check(vm.ShowDraft && !vm.HasCurrentTask, "Fresh window should show its draft");
             var run = await Start(vm, "single-use-a"); await Until(() => worker.Runs.Count == 1);
-            Check(!vm.ShowDraft && vm.HasCurrentTask, "Window kept its draft after taking a task");
+            // 任务进行中：草稿区必须还在（用户刚确认的设置、来源、输出路径都还要看得到），
+            // 但不能再编辑或再启动第二个任务。
+            Check(vm.ShowDraft && vm.HasCurrentTask, "Draft vanished the moment a task started");
+            Check(!vm.CanEdit && !vm.CanStartTask && !vm.ShowStartButton, "Draft stayed editable while its task ran");
             Check(vm.CurrentTaskUnfinished, "Running task was not reported as unfinished");
             worker.Finish(worker.Runs[0].JobId, "succeeded"); await run;
-            // 任务结束后草稿区仍然收起：窗口不做第二次任务
-            Check(!vm.ShowDraft && vm.HasCurrentTask, "Window reopened its draft after the task finished");
+            // 任务结束后草稿区收起：窗口只留结果，不做第二次任务。
+            Check(!vm.ShowDraft && vm.HasCurrentTask, "Draft stayed open after the task finished");
             Check(!vm.CurrentTaskUnfinished, "Finished task was still reported as unfinished");
         });
         await test("finished window reports itself idle while another window still runs", async () =>
