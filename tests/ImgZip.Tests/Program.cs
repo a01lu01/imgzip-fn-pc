@@ -124,8 +124,9 @@ await Test("unknown task retained; draft stays editable; inspection recovers", a
     var jobId = mock.JobId;
     vm.Apply(new WorkerEvent { JobId = jobId, Type = "finished", State = "unknown" });
     Check(vm.State == "succeeded", "Late unknown replaced confirmed success");
-    // 终结后草稿区收起，窗口只剩结果。
-    Check(!vm.ShowDraft, "Draft stayed open after the task was confirmed");
+    // 终结后草稿区仍然可见（窗口活多久就显示多久），但依旧不可编辑、也不能再启动。
+    Check(vm.ShowDraft && !vm.ShowDraftHint && !vm.CanEdit && !vm.ShowStartButton,
+        "Draft did not stay visible and read-only after the task was confirmed");
     mock.PauseRun = new(TaskCreationOptions.RunContinuationsAsynchronously);
     var second = new MainViewModel(mock, store, "unused", null, null, vm.Coordinator);
     await second.InitializeAsync();
@@ -341,6 +342,8 @@ await Test("engine picker honours mode and eligibility", () =>
     Check(MainViewModel.PickEngine("last", false, "pc") == 0, "ineligible source should never select NAS");
     return Task.CompletedTask;
 });
+
+await RecallTests.RunAsync(Test);
 
 await LifecycleTests.RunAsync(scratch, Test);
 

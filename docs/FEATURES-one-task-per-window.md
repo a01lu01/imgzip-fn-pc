@@ -30,11 +30,15 @@
 关闭窗口       → 结束该窗口的任务（见「关闭语义」）
 ```
 
-### 关键约束：窗口是单次使用的
+### 关键约束：一个窗口只承办一个任务
 
 一个窗口从打开到关闭只跑一个任务。任务结束后**不允许**在同一窗口里再开新任务——否则「一窗一任务」就退化成「一窗一串任务」，又回到多任务共处的老问题。
 
-想再压一批，就再开一个窗口。这条要在 UI 上明确：任务结束后草稿区整体收起，只留结果区和「关闭」按钮。
+想再压一批，就再开一个窗口。
+
+**这条约束靠禁用编辑与移除启动入口来实现，不靠隐藏草稿区。** 任务一经承办（`CurrentTask` 被赋值），草稿区即转为只读：`CanEdit` 为 `false`（所有编辑控件禁用，模型层的 `SetSourcesAsync` / `ClearSources` 也直接拒绝），`ShowStartButton` 为 `false`（「开始压缩」按钮消失，而不是留一个点不动的灰按钮）。
+
+草稿区本身**一直显示**（`ShowDraft` 恒为 `true`），任务进行中、结束后都不收起。窗口不会自己关闭，收起只会留下一个占着屏幕、只有底部一条任务卡片的空壳；用户想看的恰恰是「这一批压的是什么、用什么参数、输出到哪」。单次使用是**行为约束**，不该表现为**视觉惩罚**。详见 [0.5.0 后续问题记录](UI-ISSUES-0.5.0-followup.md) 的问题 1 与问题 2。
 
 ## 架构拆分（本次改动的主体）
 
@@ -359,7 +363,7 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 1. `App.xaml.cs` 的 `private MainWindow? window` 改为 `List<MainWindow> windows` + 单例 `TaskCoordinator`。
 2. `--path` 到达时新建窗口而非复用。无参数启动复用空白草稿窗口（待决问题 2）。
 3. `MainWindow.xaml` 删除 `ItemsControl` 整块，换成单任务卡片（`DataContext="{Binding CurrentTask}"`）。
-4. 任务**结束后**草稿区收起（`ShowDraft`，见「关键约束：窗口是单次使用的」）。
+4. 草稿区**一直显示**、承办任务后只读（`ShowDraft` 恒为 `true`，见「关键约束：一个窗口只承办一个任务」）。
 5. 窗口关闭只结束本窗口任务；关最后一个窗口时退出应用（待决问题 4）。
 6. 级联窗口位置（待决问题 5）。
 
@@ -368,7 +372,7 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 - `TaskCoordinator.ForceCloseAsync(string? onlyJobId = null)` 新增可选参数。传 `jobId` 只处理该任务，不传则处理全部——后者是应用退出路径，语义必须保留，否则最后一个窗口退出时漏杀其他窗口的进程。
 - `MainWindow.Window_Closing` 的守卫从全局 `HasUnfinishedTasks` 改为窗口级 `CurrentTaskUnfinished`。用全局判据会导致「关一个还有任务的窗口，把别的窗口的任务也杀了」。
 - 无参数二次启动只置前不新建。判断依据是「草稿在显示且没有来源」，否则反复双击会堆出一排空窗口。
-- **草稿区的收起时机是「任务结束」，不是「任务开始」。** 首版实现成了 `ShowDraft => CurrentTask is null`，而 `CurrentTask` 在用户点下「开始压缩」的瞬间就赋值，于是整个上半屏立刻变空白——用户刚确认完设置，最需要看见的时候反而全没了。正确判据是 `CurrentTask is not { TerminalConfirmed: true }`，任务进行中草稿区可读但只读（`CanEdit` 同时收紧为 `TasksReady && CurrentTask is null`）。详见 [0.5.0 后续问题记录](UI-ISSUES-0.5.0-followup.md)。
+- **草稿区不随任务状态收起，两次都踩过坑。** 首版实现成了 `ShowDraft => CurrentTask is null`，而 `CurrentTask` 在用户点下「开始压缩」的瞬间就赋值，于是整个上半屏立刻变空白——用户刚确认完设置，最需要看见的时候反而全没了。改成 `CurrentTask is not { TerminalConfirmed: true }` 只修了一半：任务**结束**时草稿区仍然消失，留下空白（0.5.0 的问题 2）。现在 `ShowDraft` 恒为 `true`，草稿区是窗口的常驻框架，只读与「开始压缩」消失由 `CanEdit` / `ShowStartButton` 负责。详见 [0.5.0 后续问题记录](UI-ISSUES-0.5.0-followup.md)。
 
 **踩到的坑**：
 
@@ -443,7 +447,8 @@ N 个窗口 = N 次 `TaskStore.LoadAsync()`。四个后果按严重度排：
 | 阶段 4 | ✅ 已完成，67 组通过（+2 排队原因）；实机验证 PC 排队提示 | 见下文 |
 | 阶段 5 | ✅ 已完成（`ASFW_ANY` 授权 + `BringWindowToTop` 降级）；受验证手段所限，未能在自动化环境证伪 | 见下文 |
 | 阶段 6 | ✅ 已完成，67 组通过（+1 九条断言）；`PickEngine` 纯函数 | 见下文 |
-| 阶段 3 修正 | ✅ 草稿区改为「任务结束才收起」，任务进行中可见只读；71 组通过 | 见 [0.5.0 后续问题记录](UI-ISSUES-0.5.0-followup.md) |
+| 阶段 3 修正 | ✅ 草稿区改为「承办任务后仍可见、只读」；71 组通过 | 见 [0.5.0 后续问题记录](UI-ISSUES-0.5.0-followup.md) |
+| 阶段 3 再修正 | ✅ 草稿区改为**常驻显示**（任务结束后也不收起），`ShowDraft` 恒为 `true`；73 组通过（+1 草稿常驻用例） | 见 [0.5.0 后续问题记录](UI-ISSUES-0.5.0-followup.md) 的问题 2 |
 
 
 ## 不要一次性重写

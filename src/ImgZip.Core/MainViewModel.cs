@@ -97,13 +97,24 @@ public partial class MainViewModel : ObservableObject
     /// <summary>草稿里是否已经有来源。双击启动时用来判断「这个空白窗口还能不能复用」。</summary>
     public bool HasSources => sources.Length > 0;
     /// <summary>
-    /// 草稿区是否显示。窗口是单次使用的：任务**结束后**草稿区收起，只剩结果与「打开输出」。
+    /// 草稿区是否显示。**窗口活多久就显示多久**：任务进行中、结束后都不收起，
+    /// 用户随时能回看这一批的来源、预设、执行位置与输出路径。
     ///
-    /// 判据是「任务已确认终态」而不是「是否已有任务」：后者会在用户点下「开始压缩」的瞬间
-    /// 就清空整个上半屏，而那一刻他刚确认完设置，最需要能看见自己选了什么。
-    /// 任务进行中草稿区保持可见但只读（<see cref="CanEdit"/> 为 false）。
+    /// 草稿区一旦承办任务即转为只读（<see cref="CanEdit"/> 为 false），「开始压缩」入口消失
+    /// （<see cref="ShowStartButton"/>），模型层也拒绝新的来源。**单次使用由这两者约束，
+    /// 不靠隐藏来实现**——隐藏只会留下一个占着屏幕、只有底部一条任务卡片的空壳。
+    ///
+    /// 这里刻意返回常量：它是一条**具名不变量**，被 XAML 的可见性绑定和「草稿永不收起」的
+    /// 测试共同引用。改成任何基于 <see cref="CurrentTask"/> 的判据都会让草稿区在任务开始或
+    /// 结束时消失，那正是 0.5.0 的问题 1 与问题 2。不要"化简"成表达式。
     /// </summary>
-    public bool ShowDraft => CurrentTask is not { TerminalConfirmed: true };
+    public bool ShowDraft => true;
+    /// <summary>
+    /// 窗口底部那行草稿文案（「原始图片保持不变」）是否显示。
+    /// 只在窗口**还没有承办任何任务**时显示：任务结束后这句话不再成立，
+    /// 真实结果由任务卡片自述（「成功 N · 节省 X%」），这里不重复也不臆造。
+    /// </summary>
+    public bool ShowDraftHint => ShowDraft && CurrentTask is null;
     public bool CanStart => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
     /// <summary>草稿是否可启动新任务。窗口只做一次任务，承办后不再启动第二个。</summary>
     public bool CanStartTask => CanEdit && sources.Length > 0 && (EngineIndex == 1 ? NasEligible : PcAvailable || DryRun);
@@ -179,14 +190,16 @@ public partial class MainViewModel : ObservableObject
     }
     private void NotifyDerived()
     {
-        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(ShowStartButton), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(HasCurrentTask), nameof(ShowDraft), nameof(HasSources), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+        foreach (var name in new[] { nameof(IsRunning), nameof(IsLocked), nameof(IsUnknown), nameof(CanEdit), nameof(CanStart), nameof(CanStartTask), nameof(ShowStartButton), nameof(CanCancel), nameof(CanInspect), nameof(CanOpenOutput), nameof(HasMessage), nameof(HasFailures), nameof(HasTasks), nameof(HasUnfinishedTasks), nameof(CurrentTaskUnfinished), nameof(HasCurrentTask), nameof(ShowDraft), nameof(ShowDraftHint), nameof(HasSources), nameof(IsIndeterminate), nameof(CanSetQuality), nameof(CanResize), nameof(CanCopySkippedFiles), nameof(NasEligible), nameof(Progress), nameof(ProgressText), nameof(StartText), nameof(StateTitle), nameof(AdvancedSummary), nameof(TaskSummary), nameof(EffectivePcConcurrency), nameof(EffectiveNasConcurrency), nameof(NasConcurrencyText), nameof(JpegSelected), nameof(WebpSelected), nameof(ShareSelected) }) base.OnPropertyChanged(new PropertyChangedEventArgs(name));
     }
-    // ShowDraft 依赖 CurrentTask.TerminalConfirmed：任务走到终态时 CurrentTask 引用没变，
-    // 只在 CurrentTask 赋值那一刻通知过，因此这里必须补一次，否则草稿区永远不会收起。
+    // ShowDraft 不再依赖任务状态（窗口活多久就显示多久），但 ShowDraftHint 依赖
+    // CurrentTask 是否为空：任务路由到本窗口的那一刻 CurrentTask 才被赋值，因此这里
+    // 与 NotifyDerived 都要补发，否则底部那行草稿文案会漏掉一次显隐切换。
     private void NotifyTasks()
     {
         OnPropertyChanged(nameof(TaskSummary)); OnPropertyChanged(nameof(HasTasks)); OnPropertyChanged(nameof(HasUnfinishedTasks));
-        OnPropertyChanged(nameof(CurrentTaskUnfinished)); OnPropertyChanged(nameof(ShowDraft)); OnPropertyChanged(nameof(ShowStartButton));
+        OnPropertyChanged(nameof(CurrentTaskUnfinished)); OnPropertyChanged(nameof(ShowDraft)); OnPropertyChanged(nameof(ShowDraftHint));
+        OnPropertyChanged(nameof(ShowStartButton));
         OnPropertyChanged(nameof(CanEdit)); OnPropertyChanged(nameof(CanStartTask)); OnPropertyChanged(nameof(CanStart));
     }
 

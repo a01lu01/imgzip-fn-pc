@@ -2,7 +2,7 @@
 
 记录日期：2026-11-12
 
-状态：问题 1 与附带发现已修复；问题 2 方案已确认（保留草稿区只读展示），等待实施；问题 3 已检查并记录，未实施。
+状态：问题 1、2、3 均已修复并实机验证。
 
 来源：用户实机使用 0.5.0 安装版时提交的截图与描述。
 
@@ -11,8 +11,9 @@
 | 1 | 任务**开始**后上方界面全部消失 | ✅ 已修复（任务进行中可见只读） |
 | 1b | 任务卡片在运行中显示「排队等待执行」 | ✅ 已修复 |
 | 1c | 消息在 InfoBar 与任务卡片重复，且覆盖窗口级错误 | ✅ 已修复 |
-| 2 | 任务**完成**后上方信息消失（问题 1 只修了一半） | 📋 方案已定，未实施 |
-| 3 | 多窗口时点任务栏图标无法呼出窗口 | 📋 已复现定位，未实施 |
+| 2 | 任务**完成**后上方信息消失（问题 1 只修了一半） | ✅ 已修复（草稿区常驻，承办任务后只读） |
+| 3a | 无空白草稿时二次启动新开空窗口 | ✅ 已修复（改为叫回已有窗口） |
+| 3b | 多窗口时点任务栏图标无法呼出窗口 | ✅ 已修复（激活任一窗口即整组还原；见该节的「能做到什么」） |
 
 ---
 
@@ -69,7 +70,7 @@ public bool ShowDraft => CurrentTask is null;
 
 ### 与设计意图的偏离
 
-`docs/FEATURES-one-task-per-window.md`「关键约束：窗口是单次使用的」写的是：
+`docs/FEATURES-one-task-per-window.md`「关键约束」一节（当时标题为「窗口是单次使用的」，现已改为「一个窗口只承办一个任务」）写的是：
 
 > 任务结束后**不允许**在同一窗口里再开新任务——否则「一窗一任务」就退化成「一窗一串任务」……
 > 这条要在 UI 上明确：**任务结束后**草稿区整体收起，只留结果区和「关闭」按钮。
@@ -269,8 +270,8 @@ InfoBar:   正在建立文件清单
 
 ## 问题 2：任务完成后上方信息消失（问题 1 只修了一半）
 
-记录日期：2026-11-13
-状态：**已记录，未实施。** 需要先确认设计意图，再决定改法。
+记录日期：2026-11-13（2026-11-21 实施）
+状态：**已修复。** 见文末「实施记录（2026-11-21）」。
 
 ### 现象
 
@@ -289,7 +290,7 @@ InfoBar:   正在建立文件清单
 public bool ShowDraft => CurrentTask is not { TerminalConfirmed: true };
 ```
 
-`docs/FEATURES-one-task-per-window.md`「关键约束：窗口是单次使用的」明确写：
+`docs/FEATURES-one-task-per-window.md`「关键约束」一节（当时标题为「窗口是单次使用的」）明确写：
 
 > 任务结束后**不允许**在同一窗口里再开新任务……这条要在 UI 上明确：**任务结束后草稿区整体收起**，只留结果区和「关闭」按钮。
 
@@ -379,7 +380,7 @@ public bool ShowStartButton => CurrentTask is null;                    // 已实
 
 3. **窗口底部 `ResultSummary` 的处理**：它现在绑 `ShowDraft` 用来隐藏，草稿区不收起后它会一直显示「原始图片保持不变」——任务完成后这句话不成立。需要决定：置空、换成任务结果、或干脆删掉这一行（任务卡片已经显示结果摘要）。
 
-4. **文档要改**：`FEATURES-one-task-per-window.md`「关键约束：窗口是单次使用的」中「任务结束后草稿区整体收起」需改写为「任务结束后草稿区保持只读展示，但不可再启动新任务」。
+4. **文档要改**：`FEATURES-one-task-per-window.md`「关键约束：窗口是单次使用的」中「任务结束后草稿区整体收起」需改写为「草稿区常驻显示、承办任务后只读，不可再启动新任务」。（已实施：标题改为「一个窗口只承办一个任务」，`ShowDraft` 恒为 `true`。）
 
 ### 界面示意（实施后预期）
 
@@ -402,12 +403,58 @@ public bool ShowStartButton => CurrentTask is null;                    // 已实
 
 曾考虑「保持收起 + 把关键信息摘进任务卡片」。用户明确要求保留完整上方信息，此方案不采用，记录备查。
 
+### 实施记录（2026-11-21）
+
+**`ShowDraft` 从「任务未确认终态」改为恒 `true`。** 不是改回 `CurrentTask is null`——那正是问题 1 的实现，会把「开始即空白」原样搬回来。草稿区现在是窗口的常驻框架，任务进行中、结束后都显示：
+
+```csharp
+// src/ImgZip.Core/MainViewModel.cs（返回值刻意是常量：一条被 XAML 与测试共同引用的具名不变量）
+public bool ShowDraft => true;
+public bool ShowDraftHint => ShowDraft && CurrentTask is null;   // 新增：底部草稿文案
+```
+
+单次使用由既有判据承担，一行未改：`CanEdit => Coordinator.TasksReady && CurrentTask is null`、`ShowStartButton => CurrentTask is null`。`SetSourcesAsync` / `ClearSources` 开头的 `if (!CanEdit) return;` 仍在，所以拖放与 `--path` 转发也挡得住。
+
+**`ResultSummary` 那一行：只在窗口从未承办任务时显示。** 底部 `MainWindow.xaml` 的「原始图片保持不变」原绑 `ShowDraft`（靠草稿收起隐藏），现在改绑新的 `ShowDraftHint`。任务一承办它就隐藏；结束后任务卡片已自述「成功 N · 节省 X%」，这里不重复、不臆造第二个摘要。`ShowDraftHint` 已加入 `NotifyDerived()` 名单与 `NotifyTasks()` 的补发列表——它依赖 `CurrentTask` 是否为空，而任务路由到窗口时引用才会变。
+
+**测试调整。**
+
+| 用例 | 原断言 | 现断言 |
+| --- | --- | --- |
+| `window keeps its draft visible but read-only while the task runs` → 更名 `window keeps its draft visible but read-only once it owns a task` | 结束后 `ShowDraft` 为 `false` | 结束后 `ShowDraft` 仍为 `true`，且 `CanEdit`/`CanStartTask`/`ShowStartButton` 均为 `false` |
+| `Program.cs` 的 `unknown task retained; …`（:128） | `!vm.ShowDraft` | `vm.ShowDraft && !vm.ShowDraftHint && !vm.CanEdit && !vm.ShowStartButton` |
+| 新增 `draft stays visible and read-only for the window's whole life` | — | 起始可见 + 有文案 → 运行中可见但冻结、文案消失 → 完成后仍可见 → 改来源被拒 → 再点开始无效 |
+
+**变异验证**（全部被抓住）：
+
+| 变异 | 报错 |
+| --- | --- |
+| `ShowDraft => CurrentTask is not { TerminalConfirmed: true }`（问题 2 原样） | `Draft did not stay visible and read-only after the task was confirmed`（Program.cs:128）；屏蔽该行后为新用例的 `Draft disappeared after the task finished` |
+| `ShowDraft => CurrentTask is null`（问题 1 原样） | `Draft should be visible but frozen while a task is unresolved`（Program.cs:120）；屏蔽该行后为新用例的 `Draft vanished the moment a task started` |
+| `CanEdit` 去掉 `CurrentTask is null` | `Draft should be visible but frozen while a task is unresolved`；屏蔽该行后为 `Draft changed while a task was unresolved` |
+
+第一项第一轮先命中的是 `Program.cs` 那条断言（测试按文件顺序执行），为了看清新用例的报错信息，临时放宽了该行，确认后再恢复。
+
+**验证**：72 → 73 组通过（+1 草稿常驻用例；同期另有 1 组召回策略用例，全量现为 74 组）；`dotnet build src/ImgZip.App/ImgZip.App.csproj -c Release` 成功，0 错误（1 条 `CS8603` 在 `SettingsDialog.xaml.cs`，为既有告警，与本次改动无关）。
+
+**实机验证**（12 张 / 135.3 MB → 24.8 MB，节省 81.7%）：任务完成后，
+
+| 指标 | 结果 |
+| --- | --- |
+| 草稿区五要素（来源 / 压缩预设 / 执行位置 / 高级设置 / 输出到新文件夹） | **5/5 保留**，全部灰化只读 |
+| 底部「原始图片保持不变」 | **0 次**（已隐藏）✅ |
+| 「开始压缩」按钮 | 已消失 ✅ |
+| 「打开输出」按钮 | 在 ✅ |
+| 任务卡片 | 成功 12 · 失败 0 · 跳过 0 · 节省 81.7% ✅ |
+
+截图：`artifacts/issue2-after.png`。这正是用户要的效果——上半屏能回看「这次压的是什么、用什么参数、输出到哪」，下半屏看结果，看完自己关窗。
+
 ---
 
 ## 问题 3：多窗口时点任务栏图标无法呼出窗口
 
-记录日期：2026-11-14
-状态：**已检查、已记录，未实施。**
+记录日期：2026-11-14（问题 3a / 3b 于 2026-11-21 修复）
+状态：**已修复。** 但「一次点击就还原全部」在系统层面做不到，实际效果见「能做到什么」——这一点必须向用户讲清。
 
 用户描述：「多窗口存活的时候，点击任务栏图标没法呼出全部窗口，我建议是点击可以直接呼出所有窗口在台前。」
 
@@ -503,6 +550,68 @@ Windows 没有「点击分组按钮时还原该组全部窗口」的官方 API�
 - **缺点**：仍然只出一个窗口，与用户明确诉求「全部到台前」不符。
 - 结论：可作为方案 B 失败时的退路。
 
+### 能做 / 不能做什么（实施后的诚实结论）
+
+原型实测（`artifacts/proto/log.txt`）得出一个此前未料到的事实，必须写清楚：
+
+**裸点合并后的任务栏按钮，不会激活任何窗口，因此不会给应用任何通知。**
+
+`10:26:54.222/.252/.253` 三次记录里，点击那一刻只看到三个 `WM_GETICON`，没有 `WM_ACTIVATEAPP`，
+连一条窗口消息都没有。任务栏只负责弹出缩略图浮层，焦点留在 `Shell_TrayWnd` 上。
+
+也就是说「点一下按钮 → 全部窗口出来」**没有可用的触发点**：应用能收到的最早信号是
+「某个窗口正在被激活」，而裸点击不产生这个信号。这不是实现取舍，是系统边界。
+
+所以实际做到的是：
+
+| 用户动作 | 行为 |
+| --- | --- |
+| 点任务栏按钮（裸点一次） | 弹出缩略图浮层（系统行为，无法改变） |
+| 点浮层里的任一张缩略图 | ✅ **全部最小化窗口一起还原** |
+| Alt+Tab 切到某个最小化的 ImgZip 窗口 | ✅ **全部最小化窗口一起还原** |
+| 双击图标 / 再点快捷方式（无来源） | ✅ 见 3a，已有窗口整体还原并置前 |
+| 用鼠标点另一个本来就没最小化的 ImgZip 窗口 | 不动其他窗口（闸门不成立，见下） |
+
+比修复前（一个都回不来）是决定性的改善，但仍比用户原话「点一下全部到台前」少一次点击。
+
+### 实施：`WindowReveal` + 双条件闸门
+
+新增 `src/ImgZip.App/WindowReveal.cs`，给每个窗口的 HWND 挂 `SetWindowSubclass`，
+在 `WM_ACTIVATEAPP`（`wParam != 0`）时判断是否要还原兄弟窗口。
+
+**闸门是两条，缺一不可：**
+
+```csharp
+GetForegroundWindow() == hWnd && IsIconic(hWnd)
+```
+
+第一版只有 `IsIconic(hWnd)`，实测立刻被反例抓住：
+
+```
+最小化 #[0] → 点击 #[1]
+  ✗ 最小化窗口数变成 0 —— 闸门会误伤
+```
+
+原因是 `WM_ACTIVATEAPP` 按**进程**广播，每个顶层窗口都会收到一份。用户故意把 A 最小化、
+正在用 B 时，A 也会收到该消息，只看 `IsIconic(A)` 就会把 A 拉起来。
+补上「前景窗口就是自己」之后，范围才收窄到「这一个窗口正在从最小化恢复」：
+
+| 场景 | 结果 |
+| --- | --- |
+| 全部最小化 → 激活其中一个 | 3/3 还原，+4s 仍保持 ✅ |
+| 故意最小化 A → 真实点击 B | A 仍最小化 ✅ |
+
+**递归**：还原兄弟窗口会再触发一轮 `WM_ACTIVATEAPP`，但那时它们已经不是最小化了，
+闸门不成立，天然收敛。仍保留一个 `revealing` 布尔兜底，防止将来有人加「顺带还原隐藏窗口」。
+
+**清理**：窗口 `Closed` 时 `RemoveWindowSubclass`，原型里 4 窗口 × 2 层子类同时存活未出现
+崩溃或泄漏，确认 WinUI 3 不会在启动后覆盖钩子（自发 `WM_APP+0x51` 在 +4s/+15s/+45s 均收到）。
+
+**实现取舍**：`RevealSiblings()` 只还原、不抢前台——前台交给用户点中的那个窗口，
+应用不该反过来决定焦点去哪。
+
+---
+
 ### 附带发现：无空白草稿时，二次启动会新开空窗口
 
 检查过程中发现的独立问题，与任务栏无关但同属「窗口呼回」范畴。
@@ -527,10 +636,40 @@ else
 
 **这个行为值得单独确认是否合理。** 从「不堆空窗口」的设计意图看，找不到空白草稿时更应该把已有窗口叫出来，而不是再造一个空壳。
 
-### 建议实施顺序
+#### 已修复（2026-11-21）
 
-1. 先修附带发现（低成本、无风险）：无空白草稿时不再新开窗口，改为把已有窗口全部还原并置前——这条路径不涉及窗口过程钩子，纯应用逻辑。
-2. 再评估方案 B。**实施前必须先做一个 20 行的原型**验证 WinUI 3 窗口能否安全 `SetWindowSubclass` 并收到 `WM_ACTIVATEAPP`；拿不到消息则整个方案不成立，此时退到方案 D。
+把「该做什么」抽成纯函数 `src/ImgZip.Core/RecallAction.cs`：
+
+```csharp
+public static RecallAction Decide(int windowCount, bool hasBlankDraft) =>
+    windowCount == 0  ? RecallAction.Open
+    : hasBlankDraft   ? RecallAction.FocusDraft
+    :                   RecallAction.RevealAll;
+```
+
+`App.xaml.cs` 的两处「无来源启动」都改为调用 `Recall()`，由它执行这个决定；
+`RevealAll()` 还原所有最小化窗口并把最后打开的窗口置前。抽成纯函数是因为真正的窗口操作
+没法在单元测试里跑，而「该做哪一件」正是这里唯一容易搞错的地方。
+
+**顺带修正 `FindBlankDraft()` 的判据。** 它原来是 `ShowDraft && !HasSources`；问题 2 之后
+`ShowDraft` 恒为真，条件会退化成 `!HasSources`，让「承办过任务、来源已清空」的窗口被当成
+可复用空白草稿。改为 `!HasCurrentTask && !HasSources`，即「还没承办过任务」。
+
+**新增测试** `tests/ImgZip.Tests/RecallTests.cs`（6 条断言，覆盖三个分支，其中两条专门钉住
+「无空白草稿 + 有窗口 → RevealAll」这个曾经的错误分支）。
+
+**实机验证**（3 个窗口都有来源，全部最小化，无参数再启动一次）：
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 窗口数 | 3 → **4**（新开空壳） | 3 → **3** ✅ |
+| 还原数 | 0 / 4 | **3 / 3** ✅ |
+| 前台 | 新开的空窗口 | 已有窗口 ✅ |
+
+### 当时的建议实施顺序（已按此执行）
+
+1. 先修附带发现（低成本、无风险）：无空白草稿时不再新开窗口，改为把已有窗口全部还原并置前——这条路径不涉及窗口过程钩子，纯应用逻辑。**已完成。**
+2. 再评估方案 B。**实施前必须先做一个原型**验证 WinUI 3 窗口能否安全 `SetWindowSubclass` 并收到 `WM_ACTIVATEAPP`。**已做，结论：可行**（`artifacts/proto/log.txt`，含 3 次跑批与一次反例对照）。
 
 ### 验证手段备注
 
@@ -548,6 +687,8 @@ else
 
 ## 与既有文档的关系
 
-- 问题 1 是 `docs/FEATURES-one-task-per-window.md` 阶段 3 的实现偏离设计意图，不是新功能需求。已在该文档阶段 3 条目补一条说明：草稿区的收起时机以「任务结束」为准。
-- 问题 2 则反过来：**当前实现符合设计文档，但设计文档的这条约定本身已被用户否决**。实施时 `FEATURES-one-task-per-window.md`「关键约束：窗口是单次使用的」中「任务结束后草稿区整体收起」需改写为「任务结束后草稿区保持只读展示，但不可再启动新任务」；「关键约束」一节的标题也应从「窗口是单次使用的」调整为「窗口只承办一个任务」，因为约束的对象是任务而非窗口寿命——窗口可以一直存在，只是不能再接第二个任务。
-- `LifecycleTests.cs` 中原 `window stops accepting new work once it owns a task` 已按新语义改写并更名（见上表）。若实施问题 2，该用例需再改一次。
+- 问题 1 是 `docs/FEATURES-one-task-per-window.md` 阶段 3 的实现偏离设计意图，不是新功能需求。已在该文档阶段 3 条目补一条说明：草稿区随任务状态收起，两次都踩过坑。
+- 问题 2 则反过来：**当时的实现符合设计文档，但设计文档的这条约定本身已被用户否决**。实施后 `FEATURES-one-task-per-window.md`「关键约束」一节的标题改为「一个窗口只承办一个任务」——约束的对象是任务而非窗口寿命：窗口可以一直存在，只是不能再接第二个任务；「任务结束后草稿区整体收起」一句已改写为「草稿区常驻显示、承办任务后只读，单次使用靠禁用编辑与移除启动入口保证」。
+- `LifecycleTests.cs` 中原 `window stops accepting new work once it owns a task` 已按新语义改写并更名两次，现为 `window keeps its draft visible but read-only once it owns a task`；问题 2 另新增 `draft stays visible and read-only for the window's whole life`。
+- 问题 3 的实现落在 `src/ImgZip.App/WindowReveal.cs`（新增，窗口子类化）与 `src/ImgZip.App/App.xaml.cs`（`Recall` / `RevealAll` / `RevealSiblings` / 收紧后的 `FindBlankDraft`）；决策表在 `src/ImgZip.Core/RecallAction.cs`，测试在 `tests/ImgZip.Tests/RecallTests.cs`。
+- 问题 3b 是唯一一个**没有完全达成用户原话**的修复：裸点任务栏按钮不会激活任何窗口，因此没有可用的触发点。已在「能做 / 不能做什么」一节如实记录，避免后人把它当成 bug 再查一遍。

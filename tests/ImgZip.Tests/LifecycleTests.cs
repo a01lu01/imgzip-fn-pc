@@ -609,7 +609,7 @@ static class LifecycleTests
             }
             await Task.WhenAll(run1, run2);
         });
-        await test("window keeps its draft visible but read-only while the task runs", async () =>
+        await test("window keeps its draft visible but read-only once it owns a task", async () =>
         {
             var (vm, worker, _, _) = await Model("window-single-use");
             Check(vm.ShowDraft && !vm.HasCurrentTask, "Fresh window should show its draft");
@@ -620,9 +620,40 @@ static class LifecycleTests
             Check(!vm.CanEdit && !vm.CanStartTask && !vm.ShowStartButton, "Draft stayed editable while its task ran");
             Check(vm.CurrentTaskUnfinished, "Running task was not reported as unfinished");
             worker.Finish(worker.Runs[0].JobId, "succeeded"); await run;
-            // 任务结束后草稿区收起：窗口只留结果，不做第二次任务。
-            Check(!vm.ShowDraft && vm.HasCurrentTask, "Draft stayed open after the task finished");
+            // 任务结束后草稿区仍然可见（用户要回看这次压了什么），但仍不可编辑、也不能再启动。
+            Check(vm.ShowDraft && vm.HasCurrentTask, "Draft disappeared after the task finished");
+            Check(!vm.CanEdit && !vm.CanStartTask && !vm.ShowStartButton, "Finished window could start a second task");
             Check(!vm.CurrentTaskUnfinished, "Finished task was still reported as unfinished");
+        });
+        await test("draft stays visible and read-only for the window's whole life", async () =>
+        {
+            // 这条钉住问题 2 的修复：草稿区只在任务「开始」时冻结，不因任务结束而消失。
+            // 若把 ShowDraft 改回「任务已确认终态就收起」，任务跑完的那一刻就会失败。
+            var (vm, worker, _, _) = await Model("draft-lifetime");
+            Check(vm.ShowDraft && vm.ShowDraftHint && !vm.HasCurrentTask, "Fresh window should show its draft and its hint");
+            var run = await Start(vm, "lifetime-a"); await Until(() => worker.Runs.Count == 1);
+            var task = vm.CurrentTask!;
+            // 运行中：仍然可见，但已冻结；底部那行草稿文案不再显示（此窗口已承办任务）。
+            Check(vm.ShowDraft && vm.HasCurrentTask, "Draft vanished while its task was running");
+            Check(!vm.ShowDraftHint, "Draft hint outlived the start of its task");
+            Check(!vm.CanEdit && !vm.CanStartTask && !vm.ShowStartButton, "Draft stayed editable while its task ran");
+            worker.Finish(worker.Runs[0].JobId, "succeeded"); await run;
+            // 完成后：草稿区照旧显示（不是精简摘要，也不是收起），单次使用靠禁用与入口消失保证。
+            Check(vm.ShowDraft, "Draft disappeared after the task completed");
+            Check(vm.ShowDraft && ReferenceEquals(vm.CurrentTask, task) && task.TerminalConfirmed,
+                "Completed window lost the task that its draft belongs to");
+            Check(!vm.CanEdit && !vm.ShowStartButton && !vm.CanStartTask,
+                "Completed window could start a second task");
+            Check(!vm.ShowDraftHint, "Draft hint claimed the originals were untouched after a finished task");
+            // 模型层同样拒绝：拖放与 --path 转发都绕开按钮直接调 SetSourcesAsync。
+            await vm.SetSourcesAsync([Path.Combine(scratch, "lifetime-b.jpg")]);
+            vm.ClearSources();
+            Check(vm.SourcePath.EndsWith("lifetime-a.jpg", StringComparison.Ordinal),
+                "Completed window accepted a new source");
+            // 再点一次开始也无效：窗口仍然只跑过那一个任务。
+            await vm.StartAsync();
+            Check(worker.Runs.Count == 1 && ReferenceEquals(vm.CurrentTask, task),
+                "Completed window launched a second task");
         });
         await test("task progress lives on the card and window notices stay on the window", async () =>
         {
