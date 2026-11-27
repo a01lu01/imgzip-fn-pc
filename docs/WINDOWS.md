@@ -1,6 +1,6 @@
 # ImgZip A · Windows 11 x64
 
-应用采用 WinUI 3 + C# 与 A「轻量工具窗」。**0.3.6** 在 0.3.5 NAS 并发加固基础上，新增文件夹其他文件复制归档。历史 OOM 因当前账号无权读取上一启动周期的 journal 未取得直接证据，但 20 张真机测试已验证 32 请求会被硬夹到 4，SSH 全程可用。
+应用采用 WinUI 3 + C# 与 A「轻量工具窗」。**0.5.0** 为一窗一任务：每个窗口承载一个压缩任务，任务结束后草稿区仍显示但只读，关闭窗口即强制结束它自己的任务。历史 OOM 因当前账号无权读取上一启动周期的 journal 未取得直接证据，但 20 张真机测试已验证 32 请求会被硬夹到 4，SSH 全程可用。
 
 ## 构建安装包
 
@@ -27,8 +27,8 @@ pwsh -NoProfile -File build/windows.ps1 -CompilerPath 'D:\Tools\Inno Setup 7\ISC
 脚本依次运行非 UI 测试、锁定模式还原、目录形式自包含发布、下载并校验 caesium-clt 1.4.0、检查引擎可启动、编译安装程序。版本取自 `Directory.Build.props`，当前产物路径：
 
 ```text
-artifacts/installer/ImgZip-0.3.6-win-x64-setup.exe
-artifacts/installer/ImgZip-0.3.6-win-x64-setup.exe.sha256
+artifacts/installer/ImgZip-0.5.0-win-x64-setup.exe
+artifacts/installer/ImgZip-0.5.0-win-x64-setup.exe.sha256
 artifacts/build/<本次构建ID>/publish/
 ```
 
@@ -58,7 +58,7 @@ dotnet publish src/ImgZip.App/ImgZip.App.csproj -c Release --no-restore -o artif
 & "$env:LOCALAPPDATA\Programs\ImgZip\ImgZip.exe" --path '\\NAS\photos\旅行'
 ```
 
-应用按用户保持单实例。再次从右键启动会把来源交给现有窗口的草稿区；运行中也可添加来源、选择预设和引擎。每次提交保存独立的参数快照，后续草稿修改不影响已提交任务；重复来源不会重复入队。
+应用按用户保持单实例。再次从右键启动会**新开一个窗口**承载这批来源，不会劫持已有窗口的草稿；不带参数再次启动则把已有窗口叫回来（有空白草稿只叫它，否则全部还原并置前）。每次提交保存独立的参数快照，后续草稿修改不影响已提交任务；重复来源不会重复入队。
 
 默认收藏 JPEG（q90、长边 4000）、不递归、不放大小图。收藏 WebP 为 q90/4000；分享 WebP 为 q80/2560。高级设置支持质量、格式、缩放、目标字节数、线程、无损、不放大、递归和预演。无损禁用质量及目标体积，不缩放时不传尺寸参数。PC 侧线程按组批调用引擎；NAS 侧使用独立的“NAS 并发作业数”（默认 2，可调 1–4），并夹取到 `min(设置值, NAS 核数, 4)`，不会继承 PC 的 32/64 核配置。
 
@@ -87,6 +87,8 @@ NAS 侧引擎需自行部署：按 [caesium-clt 1.4.0 官方发布](https://gith
 映射盘通过 Windows CIM 转成 UNC，验证共享主机归属后重新读取 Samba 共享到真实目录的映射；不盲信缓存。认证失败与主机不可达使用不同提示，后者明确指出设备可能离线或资源耗尽。Windows 可以访问来源且 PC 引擎可用时，可以手动切换本机处理。
 
 ## 取消与故障记录
+
+草稿何时可编辑：任务一经提交，该窗口的草稿立即变只读（`CanEdit` 为假），「开始压缩」按钮消失；任务结束、取消或失败后仍然只读——一个窗口只承办一个任务，要再压一批请再开一个窗口。
 
 取消先显示“正在取消”。PC 执行层终止本任务引擎进程树并等待退出；NAS 使用独立会话/进程组，校验 PID、启动时间和会话身份后取消。SSH 断开本身不代表远程任务停止。
 
