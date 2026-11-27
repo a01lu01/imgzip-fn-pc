@@ -21,8 +21,18 @@ public sealed partial class SettingsDialog : ContentDialog
         NasConcurrencyField.Value = config.NasConcurrency;
         EngineModeField.SelectedIndex = config.EngineMode switch { "fixedPc" => 1, "last" => 2, _ => 0 };
     }
-    private string ReadEngineMode() =>
-        (EngineModeField.SelectedItem as ComboBoxItem)?.Tag as string is "fixedPc" or "last" ? (EngineModeField.SelectedItem as ComboBoxItem)!.Tag as string : "auto";
+    /// <summary>读取引擎模式。Tag 不是 fixedPc / last 时一律按 auto——含未选中项与旧版下拉数据。</summary>
+    /// <remarks>
+    /// 旧写法是 <c>(SelectedItem as ComboBoxItem)?.Tag as string is "fixedPc" or "last" ? ... : "auto"</c>，
+    /// 真分支里的 <c>as string</c> 在编译器看来仍可能为 null（它不跟踪前面的 is 判断），于是 CS8603。
+    /// 改成对 Tag 直接 switch，每个分支都返回字面量，既消掉告警也少一次重复取值。
+    /// </remarks>
+    private string ReadEngineMode() => ((EngineModeField.SelectedItem as ComboBoxItem)?.Tag as string) switch
+    {
+        "fixedPc" => "fixedPc",
+        "last" => "last",
+        _ => "auto"
+    };
     private AppConfig Read()
     {
         if (!double.IsFinite(PortField.Value) || PortField.Value != Math.Truncate(PortField.Value) || PortField.Value is < 1 or > 65535) throw new ArgumentException("SSH 端口需为 1–65535 的整数。");

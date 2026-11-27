@@ -128,7 +128,9 @@ $b = [IO.File]::ReadAllBytes($path)
                    ([IO.File]::ReadAllText($path).Contains("`r`n"))
 ```
 
-仓库没有 `.gitattributes`，靠全局 `core.autocrlf=true` 管理换行，所以**不要新建 `.gitattributes`**——会一次性改写全部文件的换行。
+仓库没有 `.gitattributes`，靠全局 `core.autocrlf=true` 管理换行：文件在库里存 LF，检出时转 CRLF。所以上表描述的是**当前工作区**的样子，新建的文件（`AGENTS.md`、`docs/TESTING.md`）现在是 LF，别人重新检出后会变成 CRLF——这不算问题，只有 BOM 丢了才算。
+
+也别新建 `.gitattributes` 来"统一换行"：它会让全部文件一次性翻转，diff 变成几千行。
 
 ### 4.3 `SetForegroundWindow` 会静默失败
 
